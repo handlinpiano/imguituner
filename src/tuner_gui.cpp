@@ -7,6 +7,7 @@
 #include <array>
 #include <deque>
 #include <memory>
+#include <unordered_map>
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -74,27 +75,72 @@ struct ComplexSOSDecimator {
   }
 };
 
-void small_fft(std::vector<std::complex<float>>& X) {
-  const int n = static_cast<int>(X.size());
-  // Bit reversal
-  int j = 0;
-  for (int i = 1; i < n; ++i) {
-    int bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) std::swap(X[i], X[j]);
-  }
-  // FFT
-  const float twoPi = 6.28318530717958647692f;
-  for (int len = 2; len <= n; len <<= 1) {
-    const float ang = -twoPi / len;
-    const std::complex<float> wlen(std::cos(ang), std::sin(ang));
-    for (int i = 0; i < n; i += len) {
+// Precomputed twiddles for radix-2 and radix-4 butterflies (cache per size)
+struct TwiddleCache {
+  std::unordered_map<int, std::vector<std::vector<std::complex<float>>>> w2_cache; // len/2 twiddles per stage
+  std::unordered_map<int, std::vector<std::vector<std::complex<float>>>> w4_cache; // len*3/4 twiddles per stage if needed
+
+  const std::vector<std::vector<std::complex<float>>>& get_or_build_radix2(int n) {
+    auto it = w2_cache.find(n);
+    if (it != w2_cache.end()) return it->second;
+    const float twoPi = 6.28318530717958647692f;
+    std::vector<std::vector<std::complex<float>>> stages;
+    for (int len = 2; len <= n; len <<= 1) {
+      const float angle = -twoPi / static_cast<float>(len);
+      const std::complex<float> wlen(std::cos(angle), std::sin(angle));
+      const int half = len / 2;
+      std::vector<std::complex<float>> stage(half);
       std::complex<float> w(1.0f, 0.0f);
-      for (int k2 = 0; k2 < len / 2; ++k2) {
-        auto u = X[i + k2], v = X[i + k2 + len / 2] * w;
-        X[i + k2] = u + v; X[i + k2 + len / 2] = u - v;
-        w *= wlen;
+      for (int k = 0; k < half; ++k) { stage[k] = w; w *= wlen; }
+      stages.push_back(std::move(stage));
+    }
+    auto [ins, _] = w2_cache.emplace(n, std::move(stages));
+    return ins->second;
+  }
+};
+
+static std::unordered_map<int, std::vector<int>> g_bitrev;
+
+static const std::vector<int>& get_or_build_bitrev(int n) {
+  auto it = g_bitrev.find(n);
+  if (it != g_bitrev.end()) return it->second;
+  int bits = 0; while ((1 << bits) < n) ++bits;
+  std::vector<int> br(n);
+  for (int i = 0; i < n; ++i) {
+    unsigned int v = static_cast<unsigned int>(i);
+    unsigned int r = 0;
+    for (int b = 0; b < bits; ++b) {
+      r = (r << 1) | (v & 1u);
+      v >>= 1;
+    }
+    br[i] = static_cast<int>(r);
+  }
+  auto [ins, _] = g_bitrev.emplace(n, std::move(br));
+  return ins->second;
+}
+
+void small_fft(std::vector<std::complex<float>>& X) {
+  static TwiddleCache twiddles;
+  const int n = static_cast<int>(X.size());
+  if (n <= 1) return;
+
+  // Bit reversal via precomputed table (scatter copy once)
+  const auto& br = get_or_build_bitrev(n);
+  std::vector<std::complex<float>> a(n);
+  for (int i = 0; i < n; ++i) a[br[i]] = X[i];
+  X.swap(a);
+
+  // FFT using precomputed radix-2 twiddles (optimized for 16384)
+  const auto& stages = twiddles.get_or_build_radix2(n);
+  int stageIndex = 0;
+  for (int len = 2; len <= n; len <<= 1, ++stageIndex) {
+    const auto& W = stages[stageIndex]; // size len/2
+    for (int i = 0; i < n; i += len) {
+      for (int k = 0; k < len / 2; ++k) {
+        const auto u = X[i + k];
+        const auto v = X[i + k + len / 2] * W[k];
+        X[i + k] = u + v;
+        X[i + k + len / 2] = u - v;
       }
     }
   }
@@ -177,11 +223,11 @@ public:
         // Setup audio
         audio_config.device_name = "hw:1,0";
         audio_config.sample_rate = 48000;
-        audio_config.period_size = 1024;
+        audio_config.period_size = 64; // lower latency callbacks
         
-        // Set initial zoom parameters for faster testing
-        zoom_config.decimation = 8;   // Faster fill for testing
-        zoom_config.fftSize = 8192;   // Faster fill for testing
+        // Default zoom parameters (will adapt at runtime between fast/precise)
+        zoom_config.decimation = 16;
+        zoom_config.fftSize = 16384;
         zoom_config.numBins = 1200;
 
         audio_processor = std::make_unique<AudioProcessor>(audio_config);
@@ -275,6 +321,14 @@ private:
     unsigned int last_effective_fs = 0;
     int last_window_samples = 0;
     int last_nz = 0;
+    // Precise mode controls (runtime adjustable)
+    int precise_fft_size = 16384;
+    int precise_decimation = 16;
+    float precise_window_seconds = 0.35f; // cap precise input to ~350 ms for responsiveness
+    int precise_fft_idx = 3;  // 0:2048, 1:4096, 2:8192, 3:16384
+    int last_required_samples = 0;
+    int last_use_fft_size = 0;
+    int last_use_decimation = 0;
     
     // Display data
     std::vector<float> current_spectrum;
@@ -302,8 +356,10 @@ private:
         }
 
         // Ensure ring buffer holds at most the window needed for a full Zoom FFT
-        const int required_input_samples = zoom_config.fftSize * std::max(1, zoom_config.decimation);
-        while (static_cast<int>(input_ring.size()) > required_input_samples) {
+        // Maintain ring buffer up to the precise time-capped window requirement
+        const int precise_required_samples = precise_fft_size * std::max(1, precise_decimation);
+        const int precise_time_capped = std::min(precise_required_samples, static_cast<int>(last_effective_fs * precise_window_seconds));
+        while (static_cast<int>(input_ring.size()) > precise_time_capped) {
             input_ring.pop_front();
         }
 
@@ -313,8 +369,37 @@ private:
         for (float s : input_ring) windowed_input.push_back(s);
         last_window_samples = static_cast<int>(windowed_input.size());
 
+        // Precise-only processing path
+        std::vector<float> magnitudes;
+        int use_fft_size = precise_fft_size;
+        int use_decimation = precise_decimation;
+        int required_input_samples = precise_time_capped;
+
+        last_required_samples = required_input_samples;
+        last_use_fft_size = use_fft_size;
+        last_use_decimation = use_decimation;
+
+        // Build processing window (take latest required_input_samples from ring)
+        std::vector<float> proc_input;
+        if (required_input_samples > 0) {
+            int take = std::min(required_input_samples, static_cast<int>(input_ring.size()));
+            proc_input.reserve(take);
+            auto it = input_ring.end();
+            for (int i = 0; i < take; ++i) {
+                --it;
+                proc_input.push_back(*it);
+            }
+            std::reverse(proc_input.begin(), proc_input.end());
+        }
+
+        // Configure zoom for selected path
+        zoom::ZoomConfig cfg = zoom_config;
+        cfg.fftSize = use_fft_size;
+        cfg.decimation = use_decimation;
+        cfg.sampleRate = static_cast<int>(last_effective_fs);
+
         // Expected decimated output length Nz
-        last_nz = std::min(zoom_config.fftSize, last_window_samples / std::max(1, zoom_config.decimation));
+        last_nz = std::min(cfg.fftSize, static_cast<int>(proc_input.size()) / std::max(1, cfg.decimation));
         
         // Compute RMS on latest raw chunk for sanity
         if (input && num_samples > 0) {
@@ -328,17 +413,16 @@ private:
             last_rms = count > 0 ? std::sqrt(acc / static_cast<double>(count)) : 0.0f;
         }
 
-        // If ring buffer not yet sufficiently filled, fall back to current decimated chunk
-        std::vector<float> magnitudes;
+        // If not enough data even for fast path, fall back to current decimated chunk
         if (last_nz <= 8) {
             std::vector<float> chunk_decimated;
             chunk_decimated.reserve(static_cast<size_t>(num_samples / std::max(1, frontend_decimation)) + 1);
             for (int i = 0; i < num_samples; i += std::max(1, frontend_decimation)) {
                 chunk_decimated.push_back(input[i]);
             }
-            magnitudes = zoom::computeZoomMagnitudes(chunk_decimated.data(), static_cast<int>(chunk_decimated.size()), center_frequency, zoom_config);
+            magnitudes = zoom::computeZoomMagnitudes(chunk_decimated.data(), static_cast<int>(chunk_decimated.size()), center_frequency, cfg);
         } else {
-            magnitudes = zoom::computeZoomMagnitudes(windowed_input.data(), static_cast<int>(windowed_input.size()), center_frequency, zoom_config);
+            magnitudes = zoom::computeZoomMagnitudes(proc_input.data(), static_cast<int>(proc_input.size()), center_frequency, cfg);
         }
         
         // Thread-safe update
@@ -374,6 +458,15 @@ private:
         if (ImGui::SliderFloat("Center Freq", &center_frequency, 200.0f, 1000.0f, "%.1f Hz")) {
             // Center frequency changed
         }
+
+        // Runtime tuning controls (precise only)
+        // Fixed 16k FFT (disabled selector)
+        ImGui::Text("FFT Size: 16384 (fixed)");
+        precise_fft_size = 16384;
+        ImGui::SliderInt("Precise D", &precise_decimation, 4, 64);
+        ImGui::SliderFloat("Precise Window (s)", &precise_window_seconds, 0.20f, 0.60f, "%.2f s");
+
+        ImGui::SliderInt("Frontend decim", &frontend_decimation, 1, 4);
         
         ImGui::Text("Peak: %.1f Hz (%.1f cents) | Mag: %.6f", 
                    peak_frequency, 
@@ -382,10 +475,10 @@ private:
         ImGui::Text("Frames processed: %d", frames_processed);
         
         // Diagnostics for testing
-        const int required_input_samples = zoom_config.fftSize * std::max(1, zoom_config.decimation);
-        float fill_pct = required_input_samples > 0 ? (100.0f * static_cast<float>(last_window_samples) / static_cast<float>(required_input_samples)) : 0.0f;
+        const int ui_required = last_required_samples;
+        float fill_pct = ui_required > 0 ? (100.0f * static_cast<float>(std::min(last_window_samples, ui_required)) / static_cast<float>(ui_required)) : 0.0f;
         ImGui::Text("Fs: %u Hz | Fs_eff: %u Hz | D: %d | FFT: %d | Nz: %d (%.1f%% fill) | RMS: %.6f",
-                   last_actual_fs, last_effective_fs, zoom_config.decimation, zoom_config.fftSize, last_nz, fill_pct, last_rms);
+                   last_actual_fs, last_effective_fs, last_use_decimation, last_use_fft_size, last_nz, fill_pct, last_rms);
         
         // Spectrum plot
         if (!current_spectrum.empty()) {
