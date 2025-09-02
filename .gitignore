@@ -1,0 +1,35 @@
+# Build outputs
+/build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.o
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.exe
+
+# Binaries
+zoom_fft_test
+simple_tuner_test
+mic_level_test
+raw_fft_test
+basic_440_test
+direct_zoom_test
+tuner_gui
+
+# ImGui config
+imgui.ini
+
+# Misc
+*.swp
+*.swo
+.DS_Store
+*.log
+
