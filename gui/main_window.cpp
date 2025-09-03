@@ -8,6 +8,11 @@
 #include <deque>
 #include <memory>
 #include <unordered_map>
+#include <tuple>
+#include "spectrum_view.hpp"
+#include "settings_page.hpp"
+#include "app_settings.hpp"
+#include "app_settings_io.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -15,6 +20,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <fstream>
 
 using namespace tuner;
 
@@ -261,10 +267,56 @@ public:
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         
         ImGui::StyleColorsDark();
+
+        // Load fonts (Roboto + optional Material Design Icons)
+        auto file_exists = [](const char* path) -> bool {
+            std::ifstream f(path, std::ios::binary); return (bool)f;
+        };
+
+        const char* roboto_paths[] = {
+            "/usr/share/fonts/truetype/roboto/Roboto-Regular.ttf",
+            "/usr/share/fonts/truetype/roboto/hinted/Roboto-Regular.ttf",
+            "/usr/share/fonts/truetype/google/Roboto-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // fallback
+        };
+        const char* roboto_used = nullptr;
+        for (const char* p : roboto_paths) { if (file_exists(p)) { roboto_used = p; break; } }
+        if (roboto_used) {
+            io.Fonts->AddFontFromFileTTF(roboto_used, 18.0f);
+        } else {
+            // Default font if nothing found
+            io.Fonts->AddFontDefault();
+        }
+
+        // Optional: merge Material Design Icons from third_party/icons if present
+        const char* mdi_paths[] = {
+            "third_party/icons/MaterialIcons-Regular.ttf",
+            "third_party/icons/materialdesignicons.ttf",
+            "third_party/icons/MaterialDesignIconsDesktop.ttf",
+        };
+        const char* mdi_path = nullptr;
+        for (const char* p : mdi_paths) { if (file_exists(p)) { mdi_path = p; break; } }
+        if (mdi_path) {
+            ImFontConfig cfg; cfg.MergeMode = true; cfg.GlyphMinAdvanceX = 18.0f; cfg.GlyphOffset = ImVec2(0.0f, 2.0f);
+            static const ImWchar mdi_range[] = { 0xE000, 0xF8FF, 0 };
+            io.Fonts->AddFontFromFileTTF(mdi_path, 18.0f, &cfg, mdi_range);
+        }
         
         ImGui_ImplGlfw_InitForOpenGL(window, true);
         // Use GLSL ES 3.0 shader version for OpenGL ES
         ImGui_ImplOpenGL3_Init("#version 300 es");
+
+        // Load settings (ignore errors)
+        load_settings(settings_path, settings);
+        center_frequency = settings.center_frequency_hz;
+        precise_fft_size = settings.precise_fft_size;
+        precise_decimation = settings.precise_decimation;
+        precise_window_seconds = settings.precise_window_seconds;
+        frontend_decimation = settings.frontend_decimation;
+        spectrum_view.show_frequency_lines = settings.show_frequency_lines;
+        spectrum_view.show_peak_line = settings.show_peak_line;
+        spectrum_view.bell_curve_width = settings.bell_curve_width;
+        spectrum_view.color_scheme_idx = settings.color_scheme_idx;
         
         return true;
     }
@@ -300,6 +352,18 @@ public:
             glfwSwapBuffers(window);
         }
         
+        // Persist settings then cleanup
+        settings.center_frequency_hz = center_frequency;
+        settings.precise_fft_size = precise_fft_size;
+        settings.precise_decimation = precise_decimation;
+        settings.precise_window_seconds = precise_window_seconds;
+        settings.frontend_decimation = frontend_decimation;
+        settings.show_frequency_lines = spectrum_view.show_frequency_lines;
+        settings.show_peak_line = spectrum_view.show_peak_line;
+        settings.bell_curve_width = spectrum_view.bell_curve_width;
+        settings.color_scheme_idx = spectrum_view.color_scheme_idx;
+        save_settings(settings_path, settings);
+
         // Cleanup
         audio_processor->stop();
         ImGui_ImplOpenGL3_Shutdown();
@@ -333,12 +397,37 @@ private:
     // Display data
     std::vector<float> current_spectrum;
     std::deque<std::vector<float>> waterfall_history;
-    static constexpr int waterfall_height = 200;
+    static constexpr int waterfall_height = 400;
+    int waterfall_filled_rows = 0;
     
     float peak_frequency = 440.0f;
     float peak_magnitude = 0.0f;
     int frames_processed = 0;
     float last_rms = 0.0f;
+    gui::SpectrumView spectrum_view; // owns its own options
+    gui::SettingsPage settings_page;
+    tuner::AppSettings settings;
+    const char* settings_path = "config/settings.json";
+    bool show_icon_browser = false;
+    bool mic_enabled = true;
+    bool show_waterfall = false;
+    
+    bool show_settings_page = false;
+
+
+    // Map normalized x in [0,1] through fisheye transform (matches TS shader behavior)
+    static float fisheye_transform(float x01, float distortion) {
+        float normalizedX = (x01 - 0.5f) * 2.0f; // [-1,1]
+        float transformed = 0.0f;
+        float absx = std::fabs(normalizedX);
+        if (distortion > 0.0f) {
+            transformed = (normalizedX >= 0.0f ? absx : -absx) / (1.0f + absx * distortion);
+            transformed = transformed * (1.0f + distortion);
+        } else {
+            transformed = normalizedX;
+        }
+        return transformed * 0.5f + 0.5f; // back to [0,1]
+    }
     
     void process_audio(const float* input, int num_samples) {
         // Track actual sample rate and reflect front-end decimation
@@ -448,91 +537,194 @@ private:
         if (frames_processed % 4 == 0) {
             waterfall_history.pop_front();
             waterfall_history.push_back(magnitudes);
+            if (waterfall_filled_rows < waterfall_height) ++waterfall_filled_rows;
         }
     }
     
     void render_gui() {
         ImGui::Begin("Piano Tuner");
         
-        // Controls
-        if (ImGui::SliderFloat("Center Freq", &center_frequency, 200.0f, 1000.0f, "%.1f Hz")) {
-            // Center frequency changed
-        }
+        // Layout: top and bottom adapt to content height; center uses the rest
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        const float frame_h = ImGui::GetFrameHeightWithSpacing();
+        float h_top = frame_h * 2.0f;
+        float h_bot = frame_h * 1.5f;
+        float h_mid = std::max(0.0f, avail.y - h_top - h_bot);
 
-        // Runtime tuning controls (precise only)
-        // Fixed 16k FFT (disabled selector)
-        ImGui::Text("FFT Size: 16384 (fixed)");
-        precise_fft_size = 16384;
-        ImGui::SliderInt("Precise D", &precise_decimation, 4, 64);
-        ImGui::SliderFloat("Precise Window (s)", &precise_window_seconds, 0.20f, 0.60f, "%.2f s");
-
-        ImGui::SliderInt("Frontend decim", &frontend_decimation, 1, 4);
-        
-        ImGui::Text("Peak: %.1f Hz (%.1f cents) | Mag: %.6f", 
-                   peak_frequency, 
-                   1200.0f * std::log2(peak_frequency / center_frequency),
-                   peak_magnitude);
-        ImGui::Text("Frames processed: %d", frames_processed);
-        
-        // Diagnostics for testing
-        const int ui_required = last_required_samples;
-        float fill_pct = ui_required > 0 ? (100.0f * static_cast<float>(std::min(last_window_samples, ui_required)) / static_cast<float>(ui_required)) : 0.0f;
-        ImGui::Text("Fs: %u Hz | Fs_eff: %u Hz | D: %d | FFT: %d | Nz: %d (%.1f%% fill) | RMS: %.6f",
-                   last_actual_fs, last_effective_fs, last_use_decimation, last_use_fft_size, last_nz, fill_pct, last_rms);
-        
-        // Spectrum plot
-        if (!current_spectrum.empty()) {
-            ImGui::Text("Spectrum (±120 cents)");
-            ImGui::PlotLines("##spectrum", current_spectrum.data(), 
-                           static_cast<int>(current_spectrum.size()), 
-                           0, nullptr, 0.0f, FLT_MAX, ImVec2(0, 200));
+        // Top bar
+        ImGui::BeginChild("TopBar", ImVec2(0, h_top), true);
+        ImGui::Columns(4, nullptr, false);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 8));
+        if (ImGui::Button(u8"\uE587")) show_settings_page = false; // Material Icons: home
+        ImGui::NextColumn();
+        ImGui::Text("Piano Tuner");
+        ImGui::NextColumn();
+        if (ImGui::Button(u8"\uE3AC")) show_settings_page = true; // Material Icons: settings
+        ImGui::NextColumn();
+        {
+            const char* mic_icon = u8"\uE31D"; // Material Icons: microphone
+            const bool mic_was_off = !mic_enabled;
+            if (mic_was_off) {
+                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(90, 40, 40, 200));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(120, 60, 60, 220));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(140, 70, 70, 255));
+            }
+            if (ImGui::Button(mic_icon)) {
+                mic_enabled = !mic_enabled;
+            }
+            if (mic_was_off) ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+            // Waterfall toggle (Material Icons: U+E176)
+            const char* waterfall_icon = u8"\uE176";
+            const bool waterfall_was_on = show_waterfall;
+            if (waterfall_was_on) {
+                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(40, 90, 150, 200));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(60, 120, 180, 220));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(70, 140, 200, 255));
+            }
+            if (ImGui::Button(waterfall_icon)) {
+                show_waterfall = !show_waterfall;
+            }
+            if (waterfall_was_on) ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+            if (ImGui::Button("Icons")) show_icon_browser = !show_icon_browser;
         }
-        
-        // Waterfall display
-        if (!waterfall_history.empty() && !waterfall_history[0].empty()) {
-            ImGui::Text("Waterfall Display");
-            
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-            ImVec2 canvas_size = ImVec2(800, 300);
-            
-            // Draw waterfall
-            const float bin_width = canvas_size.x / zoom_config.numBins;
-            const float row_height = canvas_size.y / waterfall_height;
-            
-            for (int row = 0; row < waterfall_height && row < static_cast<int>(waterfall_history.size()); ++row) {
-                const auto& spectrum_row = waterfall_history[row];
-                
-                for (int bin = 0; bin < zoom_config.numBins && bin < static_cast<int>(spectrum_row.size()); ++bin) {
-                    float intensity = std::min(1.0f, spectrum_row[bin] * 1000000.0f); // Scale for visibility
-                    
-                    ImU32 color = ImGui::ColorConvertFloat4ToU32(
-                        ImVec4(intensity, intensity * 0.5f, 0.0f, 1.0f));
-                    
-                    ImVec2 p_min(canvas_pos.x + bin * bin_width, 
-                                canvas_pos.y + row * row_height);
-                    ImVec2 p_max(p_min.x + bin_width, p_min.y + row_height);
-                    
-                    draw_list->AddRectFilled(p_min, p_max, color);
+        ImGui::Columns(1);
+        ImGui::PopStyleVar();
+        ImGui::EndChild();
+
+        // Middle content
+        ImGui::BeginChild("CenterContent", ImVec2(0, h_mid), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        if (show_settings_page) {
+            settings_page.render(center_frequency,
+                                 precise_fft_size,
+                                 precise_decimation,
+                                 precise_window_seconds,
+                                 frontend_decimation,
+                                 spectrum_view);
+        } else {
+            if (show_waterfall) {
+                // Simple waterfall using accumulated history
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                ImVec2 m_av = ImGui::GetContentRegionAvail();
+                const float width = m_av.x;
+                const float height = m_av.y;
+                ImVec2 canvas_size(width, height);
+                const ImVec2 p0 = canvas_pos;
+                const ImVec2 p1 = ImVec2(canvas_pos.x + width, canvas_pos.y + height);
+                draw_list->AddRectFilled(p0, p1, IM_COL32(15,15,18,255));
+                draw_list->AddRect(p0, p1, IM_COL32(60,60,60,255));
+                ImGui::PushClipRect(p0, p1, true);
+                const int rows = std::max(1, std::min(waterfall_filled_rows, (int)waterfall_history.size()));
+                if (rows > 0 && !waterfall_history[0].empty()) {
+                    const int cols = (int)waterfall_history[0].size();
+                    const float bin_width = width / std::max(1, cols);
+                    const float row_height = height / std::max(1, rows);
+                    // Use SpectrumView color scheme for consistent palette
+                    const auto& schemes = spectrum_view.schemes();
+                    const auto& scheme = schemes[std::max(0, std::min((int)schemes.size()-1, spectrum_view.color_scheme_idx))];
+                    for (int r = 0; r < rows; ++r) {
+                        // Take the last 'rows' entries so we stretch them over the full height
+                        const int base_index = (int)waterfall_history.size() - rows;
+                        const auto& spectrum_row = waterfall_history[base_index + r];
+                        // Per-row max for normalization
+                        float row_max = 0.0f;
+                        for (int c = 0; c < cols && c < (int)spectrum_row.size(); ++c) row_max = std::max(row_max, spectrum_row[c]);
+                        if (row_max <= 0.0f) row_max = 1.0f;
+                        for (int c = 0; c < cols && c < (int)spectrum_row.size(); ++c) {
+                            float t = spectrum_row[c] / row_max; // 0..1
+                            // Interpolate selected color scheme
+                            float rcp = t, gcp = t, bcp = t;
+                            for (size_t si = 0; si + 1 < scheme.stops.size(); ++si) {
+                                const auto& s0 = scheme.stops[si];
+                                const auto& s1 = scheme.stops[si+1];
+                                if (t <= s1.position) {
+                                    float span = (s1.position - s0.position);
+                                    float u = span > 0.0f ? (t - s0.position) / span : 0.0f;
+                                    rcp = s0.r + (s1.r - s0.r) * u;
+                                    gcp = s0.g + (s1.g - s0.g) * u;
+                                    bcp = s0.b + (s1.b - s0.b) * u;
+                                    break;
+                                }
+                            }
+                            ImU32 col = IM_COL32((int)(rcp*255.0f), (int)(gcp*255.0f), (int)(bcp*255.0f), 255);
+                            const float x0 = canvas_pos.x + c * bin_width;
+                            const float y0 = canvas_pos.y + r * row_height;
+                            // Clamp last column/row to exact canvas edge to avoid visible gaps/clipping
+                            const float x1 = (c == cols - 1) ? p1.x : (x0 + bin_width);
+                            const float y1 = (r == rows - 1) ? p1.y : (y0 + row_height);
+                            ImVec2 p_min(x0, y0);
+                            ImVec2 p_max(x1, y1);
+                            draw_list->AddRectFilled(p_min, p_max, col);
+                        }
+                    }
                 }
+                ImGui::PopClipRect();
+                // Reserve no extra space; child has fixed height, and scrollbars are disabled
+            } else if (!current_spectrum.empty()) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                ImVec2 m_av = ImGui::GetContentRegionAvail();
+                const float width = std::max(200.0f, m_av.x);
+                const float height = std::max(120.0f, m_av.y);
+                ImVec2 canvas_size(width, height);
+                spectrum_view.draw(dl, canvas_pos, width, height, current_spectrum, center_frequency, peak_frequency, peak_magnitude);
+                // Reserve no extra space; child has fixed height, and scrollbars are disabled
             }
-            
-            // Add frequency labels
-            for (int cents = -120; cents <= 120; cents += 40) {
-                float x = canvas_pos.x + (cents + 120) * canvas_size.x / 240.0f;
-                draw_list->AddLine(ImVec2(x, canvas_pos.y), 
-                                 ImVec2(x, canvas_pos.y + canvas_size.y), 
-                                 IM_COL32(100, 100, 100, 255));
-                
-                char label[32];
-                snprintf(label, sizeof(label), "%+d¢", cents);
-                draw_list->AddText(ImVec2(x, canvas_pos.y - 20), 
-                                 IM_COL32(255, 255, 255, 255), label);
-            }
-            
-            ImGui::Dummy(canvas_size);
         }
+        ImGui::EndChild();
+
+        // Bottom bar with 4 columns and placeholder icons
+        ImGui::BeginChild("BottomBar", ImVec2(0, h_bot), true);
+        ImGui::Columns(4, nullptr, false);
+        ImGui::Text("[Prev]");
+        ImGui::NextColumn();
+        ImGui::Text("[Play]");
+        ImGui::NextColumn();
+        if (ImGui::Button("Home")) show_settings_page = false;
+        ImGui::NextColumn();
+        if (ImGui::Button("Settings")) show_settings_page = true;
+        ImGui::Columns(1);
+        ImGui::EndChild();
         
+        // Optional: Icon Browser window
+        if (show_icon_browser) {
+            ImGui::Begin("Icon Browser", &show_icon_browser);
+            ImGui::TextUnformatted("Click a glyph to copy its codepoint (U+XXXX) to the clipboard.");
+            ImGui::Separator();
+            ImGuiIO& io = ImGui::GetIO();
+            ImFont* icon_font = nullptr;
+            if (!io.Fonts->Fonts.empty()) icon_font = io.Fonts->Fonts.back();
+            if (icon_font) {
+                int items_in_row = 10;
+                int col = 0;
+                for (int cp = 0xE000; cp <= 0xF8FF; ++cp) {
+                    // Encode codepoint to UTF-8 (PUA range uses 3-byte UTF-8)
+                    char utf8[5] = {};
+                    ImWchar w = (ImWchar)cp;
+                    if (w < 0x80) { utf8[0] = (char)w; utf8[1] = 0; }
+                    else if (w < 0x800) { utf8[0] = (char)(0xC0 | (w >> 6)); utf8[1] = (char)(0x80 | (w & 0x3F)); utf8[2] = 0; }
+                    else if (w < 0x10000) { utf8[0] = (char)(0xE0 | (w >> 12)); utf8[1] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[2] = (char)(0x80 | (w & 0x3F)); utf8[3] = 0; }
+                    else { utf8[0] = (char)(0xF0 | (w >> 18)); utf8[1] = (char)(0x80 | ((w >> 12) & 0x3F)); utf8[2] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[3] = (char)(0x80 | (w & 0x3F)); utf8[4] = 0; }
+                    ImGui::PushFont(icon_font);
+                    bool clicked = ImGui::Button(utf8, ImVec2(28, 28));
+                    ImGui::PopFont();
+                    ImGui::SameLine();
+                    ImGui::Text("U+%04X", cp);
+                    if (clicked) {
+                        char buf[16];
+                        snprintf(buf, sizeof(buf), "U+%04X", cp);
+                        ImGui::SetClipboardText(buf);
+                    }
+                    if (++col >= items_in_row) { col = 0; ImGui::NewLine(); }
+                }
+            } else {
+                ImGui::TextUnformatted("No icon font loaded.");
+            }
+            ImGui::End();
+        }
+
         ImGui::End();
     }
 };

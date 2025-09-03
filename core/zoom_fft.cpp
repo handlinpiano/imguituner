@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include "fft/fft_utils.hpp"
 #include <unordered_map>
 
 namespace tuner {
@@ -137,7 +138,7 @@ std::vector<float> ZoomFFT::process(const float* input, int input_length, float 
     std::copy(decimated_buffer.begin(), decimated_buffer.end(), fft_buffer.begin());
     
     // Compute FFT
-    compute_fft(fft_buffer);
+    tuner::fft::compute_fft_inplace(fft_buffer);
     
     // Sample magnitudes at desired cent offsets
     return sample_magnitudes(fft_buffer);
@@ -154,69 +155,9 @@ void ZoomFFT::apply_window(std::vector<std::complex<float>>& data) {
     }
 }
 
-// Internal caches to speed up FFT: bit-reversal indices and twiddles per size
-namespace {
-    static std::unordered_map<int, std::vector<int>> g_bitrev;
-    static std::unordered_map<int, std::vector<std::vector<std::complex<float>>>> g_twiddles;
-
-    const std::vector<int>& get_or_build_bitrev(int n) {
-        auto it = g_bitrev.find(n);
-        if (it != g_bitrev.end()) return it->second;
-        int bits = 0; while ((1 << bits) < n) ++bits;
-        std::vector<int> br(n);
-        for (int i = 0; i < n; ++i) {
-            unsigned int v = static_cast<unsigned int>(i);
-            unsigned int r = 0;
-            for (int b = 0; b < bits; ++b) { r = (r << 1) | (v & 1u); v >>= 1; }
-            br[i] = static_cast<int>(r);
-        }
-        auto [ins, _] = g_bitrev.emplace(n, std::move(br));
-        return ins->second;
-    }
-
-    const std::vector<std::vector<std::complex<float>>>& get_or_build_twiddles(int n) {
-        auto it = g_twiddles.find(n);
-        if (it != g_twiddles.end()) return it->second;
-        const float two_pi = 2.0f * M_PI;
-        std::vector<std::vector<std::complex<float>>> stages;
-        for (int len = 2; len <= n; len <<= 1) {
-            const float angle = -two_pi / static_cast<float>(len);
-            const std::complex<float> wlen(std::cos(angle), std::sin(angle));
-            const int half = len / 2;
-            std::vector<std::complex<float>> stage(half);
-            std::complex<float> w(1.0f, 0.0f);
-            for (int k = 0; k < half; ++k) { stage[k] = w; w *= wlen; }
-            stages.push_back(std::move(stage));
-        }
-        auto [ins, _] = g_twiddles.emplace(n, std::move(stages));
-        return ins->second;
-    }
-}
-
+// compute_fft now delegates to shared utils
 void ZoomFFT::compute_fft(std::vector<std::complex<float>>& data) {
-    const int n = static_cast<int>(data.size());
-    if (n <= 1) return;
-
-    // Bit-reversal via cached table
-    const auto& br = get_or_build_bitrev(n);
-    std::vector<std::complex<float>> a(n);
-    for (int i = 0; i < n; ++i) a[br[i]] = data[i];
-    data.swap(a);
-
-    // Iterative radix-2 using cached twiddles
-    const auto& stages = get_or_build_twiddles(n);
-    int stageIndex = 0;
-    for (int len = 2; len <= n; len <<= 1, ++stageIndex) {
-        const auto& W = stages[stageIndex]; // len/2 twiddles
-        for (int i = 0; i < n; i += len) {
-            for (int k = 0; k < len / 2; ++k) {
-                const auto u = data[i + k];
-                const auto v = data[i + k + len / 2] * W[k];
-                data[i + k] = u + v;
-                data[i + k + len / 2] = u - v;
-            }
-        }
-    }
+    tuner::fft::compute_fft_inplace(data);
 }
 
 std::vector<float> ZoomFFT::sample_magnitudes(const std::vector<std::complex<float>>& spectrum) {

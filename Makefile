@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic -DNDEBUG
-INCLUDES = -I./include
+INCLUDES = -I./include -I./include/tuner
 LIBS = -lasound -lpthread -lm
 
 # ImGui vendored location
@@ -22,10 +22,12 @@ IMGUI_SRCS = \
 # Enable ImGui OpenGL ES 3 backend code paths
 CXXFLAGS += -DIMGUI_IMPL_OPENGL_ES3
 
-# Source files
-SRCS = src/zoom_fft.cpp \
-       src/audio_processor.cpp \
-       src/butterworth_filter.cpp
+# Source files (new layout)
+SRCS = core/zoom_fft.cpp \
+       platform/alsa/audio_processor.cpp \
+       core/butterworth_filter.cpp \
+       core/fft/fft_utils.cpp \
+       core/app_settings_io.cpp
 
 # Object files
 OBJS = $(SRCS:.cpp=.o)
@@ -46,11 +48,14 @@ DIRECT_ZOOM_TARGET = direct_zoom_test
 DIRECT_ZOOM_SRC = test/direct_zoom_test.cpp
 
 TUNER_GUI_TARGET = tuner_gui
-TUNER_GUI_SRC = src/tuner_gui.cpp
+TUNER_GUI_SRC = gui/main_window.cpp
+ICON_BROWSER_TARGET = icon_browser
+ICON_BROWSER_SRC = gui/icon_browser.cpp
+ICON_BROWSER_OBJS = gui/icon_browser.o $(IMGUI_OBJS)
 
 # Object files for GUI
 IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
-TUNER_GUI_OBJS = src/tuner_gui.o src/audio_processor.o $(IMGUI_OBJS)
+TUNER_GUI_OBJS = gui/main_window.o gui/spectrum_view.o gui/settings_page.o platform/alsa/audio_processor.o core/app_settings_io.o $(IMGUI_OBJS)
 
 # Default target
 all: $(TUNER_GUI_TARGET)
@@ -71,13 +76,18 @@ $(SIMPLE_TEST_TARGET): $(OBJS) $(SIMPLE_TEST_SRC:.cpp=.o)
 $(BASIC_440_TARGET): $(OBJS) $(BASIC_440_SRC:.cpp=.o)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
+
 # Build direct zoom test (uses only audio_processor, no zoom_fft classes)
-$(DIRECT_ZOOM_TARGET): src/audio_processor.o $(DIRECT_ZOOM_SRC:.cpp=.o)
+$(DIRECT_ZOOM_TARGET): platform/alsa/audio_processor.o $(DIRECT_ZOOM_SRC:.cpp=.o)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
 # Build tuner_gui with ImGui backends (OpenGL ES 3 + GLFW)
 $(TUNER_GUI_TARGET): $(TUNER_GUI_OBJS)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -o $@ $^ $(LIBS) $(GUI_LIBS)
+
+# Build standalone icon browser
+$(ICON_BROWSER_TARGET): $(ICON_BROWSER_OBJS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -o $@ $^ $(GUI_LIBS)
 
 # Compile core source files
 %.o: %.cpp
@@ -87,8 +97,17 @@ $(TUNER_GUI_TARGET): $(TUNER_GUI_OBJS)
 $(IMGUI_DIR)/%.o: $(IMGUI_DIR)/%.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-# Compile tuner_gui with GUI includes
-src/tuner_gui.o: src/tuner_gui.cpp
+# Compile GUI with includes
+gui/main_window.o: gui/main_window.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/icon_browser.o: gui/icon_browser.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/spectrum_view.o: gui/spectrum_view.cpp gui/spectrum_view.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/settings_page.o: gui/settings_page.cpp gui/settings_page.hpp gui/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 # Debug build
