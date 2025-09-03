@@ -13,7 +13,8 @@ public:
                 int& precise_decimation,
                 float& precise_window_seconds,
                 int& frontend_decimation,
-                SpectrumView& spectrum_view);
+                SpectrumView& spectrum_view,
+                int& waterfall_stride);
 };
 
 } // namespace gui

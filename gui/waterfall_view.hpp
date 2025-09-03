@@ -15,7 +15,7 @@ public:
     int max_rows = default_max_rows;
     // Fixed pixel height per waterfall row (prevents resize stretching)
     float row_px = 12.0f;
-    bool use_texture = false; // fallback to CPU drawing by default
+    bool use_texture = true; // default to texture path for full-height fill
 
     WaterfallView();
 

@@ -14,6 +14,8 @@
 #include "settings_page.hpp"
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
+#include "zoom_fft.hpp"
+#include "fft/fft_utils.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -25,198 +27,7 @@
 
 using namespace tuner;
 
-// Copy exact working zoom FFT from your code
-namespace zoom {
-
-struct ZoomConfig {
-  int decimation = 16;
-  int fftSize = 16384;
-  int numBins = 1200;
-  int windowType = 0;  // 0=Hann
-  int sampleRate = 48000;
-};
-
-struct Biquad {
-  float b0, b1, b2, a1, a2;
-  std::complex<float> z1{0.0f, 0.0f};
-  std::complex<float> z2{0.0f, 0.0f};
-  
-  void setCoefficients(float b0_, float b1_, float b2_, float a0_, float a1_, float a2_) {
-    float inv_a0 = 1.0f / a0_;
-    b0 = b0_ * inv_a0; b1 = b1_ * inv_a0; b2 = b2_ * inv_a0;
-    a1 = a1_ * inv_a0; a2 = a2_ * inv_a0;
-  }
-  
-  std::complex<float> process(const std::complex<float>& x) {
-    std::complex<float> w = x - a1 * z1 - a2 * z2;
-    std::complex<float> y = b0 * w + b1 * z1 + b2 * z2;
-    z2 = z1; z1 = w;
-    return y;
-  }
-  
-  void reset() { z1 = z2 = std::complex<float>(0.0f, 0.0f); }
-};
-
-struct ComplexSOSDecimator {
-  static constexpr int NUM_SECTIONS = 4;
-  std::array<Biquad, NUM_SECTIONS> sections;
-  int decim = 1, decimCount = 0, sampleRate = 48000;
-  
-  void design(int fs, float, int decimation) {
-    decim = std::max(1, decimation);
-    decimCount = 0; sampleRate = fs;
-    for (auto& s : sections) s.reset();
-    
-    // Joe filter coefficients
-    sections[0].setCoefficients(1.0f, 2.0f, 1.0f, 1.0f, -1.9648f, 0.9891f);
-    sections[1].setCoefficients(1.0f, 2.0f, 1.0f, 1.0f, -1.9517f, 0.9692f);
-    sections[2].setCoefficients(1.0f, 2.0f, 1.0f, 1.0f, -1.9460f, 0.9542f);
-    sections[3].setCoefficients(1.0f, 2.0f, 1.0f, 1.0f, -1.9444f, 0.9461f);
-  }
-  
-  bool push(const std::complex<float>& x, std::complex<float>& yOut) {
-    std::complex<float> y = x;
-    for (auto& s : sections) y = s.process(y);
-    if (++decimCount % decim != 0) return false;
-    yOut = y; return true;
-  }
-};
-
-// Precomputed twiddles for radix-2 and radix-4 butterflies (cache per size)
-struct TwiddleCache {
-  std::unordered_map<int, std::vector<std::vector<std::complex<float>>>> w2_cache; // len/2 twiddles per stage
-  std::unordered_map<int, std::vector<std::vector<std::complex<float>>>> w4_cache; // len*3/4 twiddles per stage if needed
-
-  const std::vector<std::vector<std::complex<float>>>& get_or_build_radix2(int n) {
-    auto it = w2_cache.find(n);
-    if (it != w2_cache.end()) return it->second;
-    const float twoPi = 6.28318530717958647692f;
-    std::vector<std::vector<std::complex<float>>> stages;
-    for (int len = 2; len <= n; len <<= 1) {
-      const float angle = -twoPi / static_cast<float>(len);
-      const std::complex<float> wlen(std::cos(angle), std::sin(angle));
-      const int half = len / 2;
-      std::vector<std::complex<float>> stage(half);
-      std::complex<float> w(1.0f, 0.0f);
-      for (int k = 0; k < half; ++k) { stage[k] = w; w *= wlen; }
-      stages.push_back(std::move(stage));
-    }
-    auto [ins, _] = w2_cache.emplace(n, std::move(stages));
-    return ins->second;
-  }
-};
-
-static std::unordered_map<int, std::vector<int>> g_bitrev;
-
-static const std::vector<int>& get_or_build_bitrev(int n) {
-  auto it = g_bitrev.find(n);
-  if (it != g_bitrev.end()) return it->second;
-  int bits = 0; while ((1 << bits) < n) ++bits;
-  std::vector<int> br(n);
-  for (int i = 0; i < n; ++i) {
-    unsigned int v = static_cast<unsigned int>(i);
-    unsigned int r = 0;
-    for (int b = 0; b < bits; ++b) {
-      r = (r << 1) | (v & 1u);
-      v >>= 1;
-    }
-    br[i] = static_cast<int>(r);
-  }
-  auto [ins, _] = g_bitrev.emplace(n, std::move(br));
-  return ins->second;
-}
-
-void small_fft(std::vector<std::complex<float>>& X) {
-  static TwiddleCache twiddles;
-  const int n = static_cast<int>(X.size());
-  if (n <= 1) return;
-
-  // Bit reversal via precomputed table (scatter copy once)
-  const auto& br = get_or_build_bitrev(n);
-  std::vector<std::complex<float>> a(n);
-  for (int i = 0; i < n; ++i) a[br[i]] = X[i];
-  X.swap(a);
-
-  // FFT using precomputed radix-2 twiddles (optimized for 16384)
-  const auto& stages = twiddles.get_or_build_radix2(n);
-  int stageIndex = 0;
-  for (int len = 2; len <= n; len <<= 1, ++stageIndex) {
-    const auto& W = stages[stageIndex]; // size len/2
-    for (int i = 0; i < n; i += len) {
-      for (int k = 0; k < len / 2; ++k) {
-        const auto u = X[i + k];
-        const auto v = X[i + k + len / 2] * W[k];
-        X[i + k] = u + v;
-        X[i + k + len / 2] = u - v;
-      }
-    }
-  }
-}
-
-std::vector<float> computeZoomMagnitudes(const float* input, int inputLength, double centerHz, const ZoomConfig& cfg) {
-  const int D = std::max(1, cfg.decimation);
-  const int N = inputLength;
-  const int Nz = std::min(cfg.fftSize, N / D);
-  if (Nz <= 8 || !input || cfg.sampleRate <= 0 || centerHz <= 0.0) {
-    return std::vector<float>(std::max(1, cfg.numBins), 0.0f);
-  }
-
-  const float twoPi = 6.28318530717958647692f;
-  const float omega = twoPi * static_cast<float>(centerHz) / static_cast<float>(cfg.sampleRate);
-  const std::complex<float> w(std::cos(-omega), std::sin(-omega));
-  std::complex<float> p(1.0f, 0.0f);
-
-  std::vector<std::complex<float>> z(Nz);
-  ComplexSOSDecimator filter;
-  filter.design(cfg.sampleRate, 0.0f, D);
-
-  int outIdx = 0, renormCounter = 0;
-  for (int n = 0; n < N && outIdx < Nz; ++n) {
-    const std::complex<float> mixed = p * input[n];
-    p *= w;
-    if ((++renormCounter & 8191) == 0) {
-      float mag = std::abs(p);
-      if (mag > 0.0f) p /= mag;
-    }
-    std::complex<float> y;
-    if (filter.push(mixed, y)) z[outIdx++] = y;
-  }
-  for (; outIdx < Nz; ++outIdx) z[outIdx] = std::complex<float>(0.0f, 0.0f);
-
-  if (cfg.windowType == 0) { // Hann
-    for (int k = 0; k < Nz; ++k) {
-      const float wv = 0.5f * (1.0f - std::cos(twoPi * static_cast<float>(k) / static_cast<float>(Nz - 1)));
-      z[k] *= wv;
-    }
-  }
-
-  std::vector<std::complex<float>> X(cfg.fftSize, std::complex<float>(0.0f, 0.0f));
-  for (int k = 0; k < Nz; ++k) X[k] = z[k];
-  small_fft(X);
-
-  std::vector<float> mags(cfg.fftSize);
-  for (int k = 0; k < cfg.fftSize; ++k) mags[k] = std::hypot(X[k].real(), X[k].imag());
-
-  std::vector<float> out(std::max(1, cfg.numBins), 0.0f);
-  const float fsz = static_cast<float>(cfg.sampleRate) / static_cast<float>(D);
-  const float centsSpan = 240.0f, centsMin = -120.0f;
-  
-  for (int b = 0; b < cfg.numBins; ++b) {
-    const float cents = centsMin + centsSpan * (static_cast<float>(b) / static_cast<float>(cfg.numBins - 1));
-    const float targetHzAbs = static_cast<float>(centerHz) * std::pow(2.0f, cents / 1200.0f);
-    const float basebandHz = targetHzAbs - static_cast<float>(centerHz);
-    if (std::fabs(basebandHz) > (fsz * 0.5f)) { out[b] = 0.0f; continue; }
-    const float binf = (basebandHz / fsz) * static_cast<float>(cfg.fftSize);
-    const int k0 = static_cast<int>(std::floor(binf));
-    const float frac = binf - static_cast<float>(k0);
-    const int i0 = ((k0 % cfg.fftSize) + cfg.fftSize) % cfg.fftSize;
-    const int i1 = (i0 + 1) % cfg.fftSize;
-    out[b] = mags[i0] * (1.0f - frac) + mags[i1] * frac;
-  }
-  return out;
-}
-
-} // namespace zoom
+// GUI uses core ZoomFFT; no DSP here
 
 class TunerGUI {
 public:
@@ -227,10 +38,7 @@ public:
         audio_config.sample_rate = 48000;
         audio_config.period_size = 64; // lower latency callbacks
         
-        // Default zoom parameters (will adapt at runtime between fast/precise)
-        zoom_config.decimation = 16;
-        zoom_config.fftSize = 16384;
-        zoom_config.numBins = 1200;
+        // Default zoom parameters are configured in cfg_core when processing
 
         audio_processor = std::make_unique<AudioProcessor>(audio_config);
         audio_processor->set_process_callback([this](const float* input, int num_samples) {
@@ -372,7 +180,7 @@ public:
 private:
     GLFWwindow* window = nullptr;
     float center_frequency;
-    zoom::ZoomConfig zoom_config;
+    // legacy zoom_config removed; using core ZoomFFTConfig on demand
     AudioConfig audio_config;
     std::unique_ptr<AudioProcessor> audio_processor;
     int frontend_decimation = 2; // Use every 2nd sample (effective 24k from 48k)
@@ -405,6 +213,9 @@ private:
     bool show_icon_browser = false;
     bool mic_enabled = true;
     bool show_waterfall = false;
+    // Waterfall speed control: update one row every N audio frames (1 = fastest)
+    int waterfall_stride = 1;
+    int waterfall_counter = 0;
     
     bool show_settings_page = false;
 
@@ -427,7 +238,7 @@ private:
         // Track actual sample rate and reflect front-end decimation
         const unsigned int actual_fs = audio_processor->get_config().sample_rate;
         const unsigned int effective_fs = actual_fs / static_cast<unsigned int>(std::max(1, frontend_decimation));
-        zoom_config.sampleRate = static_cast<int>(effective_fs);
+        // sample rate for core zoom fft is set when constructing cfg_core
         last_actual_fs = actual_fs;
         last_effective_fs = effective_fs;
 
@@ -452,7 +263,7 @@ private:
         for (float s : input_ring) windowed_input.push_back(s);
         last_window_samples = static_cast<int>(windowed_input.size());
 
-        // Precise-only processing path
+        // Precise-only processing path using core ZoomFFT
         std::vector<float> magnitudes;
         int use_fft_size = precise_fft_size;
         int use_decimation = precise_decimation;
@@ -475,14 +286,24 @@ private:
             std::reverse(proc_input.begin(), proc_input.end());
         }
 
-        // Configure zoom for selected path
-        zoom::ZoomConfig cfg = zoom_config;
-        cfg.fftSize = use_fft_size;
-        cfg.decimation = use_decimation;
-        cfg.sampleRate = static_cast<int>(last_effective_fs);
+        // Configure core ZoomFFT
+        tuner::ZoomFFTConfig cfg_core;
+        cfg_core.decimation = use_decimation;
+        cfg_core.fft_size = use_fft_size;
+        cfg_core.num_bins = 1200; // match previous default
+        cfg_core.sample_rate = static_cast<int>(last_effective_fs);
+        cfg_core.use_hann = true;
+        static std::unique_ptr<tuner::ZoomFFT> zoomfft;
+        static int last_fft_size_used = 0, last_decim_used = 0, last_sr_used = 0;
+        if (!zoomfft || last_fft_size_used != cfg_core.fft_size || last_decim_used != cfg_core.decimation || last_sr_used != cfg_core.sample_rate) {
+            zoomfft = std::make_unique<tuner::ZoomFFT>(cfg_core);
+            last_fft_size_used = cfg_core.fft_size;
+            last_decim_used = cfg_core.decimation;
+            last_sr_used = cfg_core.sample_rate;
+        }
 
         // Expected decimated output length Nz
-        last_nz = std::min(cfg.fftSize, static_cast<int>(proc_input.size()) / std::max(1, cfg.decimation));
+        last_nz = std::min(use_fft_size, static_cast<int>(proc_input.size()) / std::max(1, use_decimation));
         
         // Compute RMS on latest raw chunk for sanity
         if (input && num_samples > 0) {
@@ -503,9 +324,9 @@ private:
             for (int i = 0; i < num_samples; i += std::max(1, frontend_decimation)) {
                 chunk_decimated.push_back(input[i]);
             }
-            magnitudes = zoom::computeZoomMagnitudes(chunk_decimated.data(), static_cast<int>(chunk_decimated.size()), center_frequency, cfg);
+            magnitudes = zoomfft->process(chunk_decimated.data(), (int)chunk_decimated.size(), center_frequency);
         } else {
-            magnitudes = zoom::computeZoomMagnitudes(proc_input.data(), static_cast<int>(proc_input.size()), center_frequency, cfg);
+            magnitudes = zoomfft->process(proc_input.data(), (int)proc_input.size(), center_frequency);
         }
         
         // Thread-safe update
@@ -522,13 +343,16 @@ private:
         }
         
         // Convert bin to frequency
-        float cents = -120.0f + 240.0f * (static_cast<float>(peak_bin) / (zoom_config.numBins - 1));
+        float cents = -120.0f + 240.0f * (static_cast<float>(peak_bin) / (1200 - 1));
         peak_frequency = center_frequency * std::pow(2.0f, cents / 1200.0f);
         peak_magnitude = max_mag;
         frames_processed++;
         
-        // Update waterfall (every frame for smoother animation)
-        waterfall_view.update(magnitudes);
+        // Update waterfall according to speed control
+        if (++waterfall_counter >= std::max(1, waterfall_stride)) {
+            waterfall_counter = 0;
+            waterfall_view.update(magnitudes);
+        }
     }
     
     void render_gui() {
@@ -583,6 +407,8 @@ private:
         ImGui::PopStyleVar();
         ImGui::EndChild();
 
+        // (Moved speed control into Settings page)
+
         // Middle content
         ImGui::BeginChild("CenterContent", ImVec2(0, h_mid), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         if (show_settings_page) {
@@ -591,7 +417,8 @@ private:
                                  precise_decimation,
                                  precise_window_seconds,
                                  frontend_decimation,
-                                 spectrum_view);
+                                 spectrum_view,
+                                 waterfall_stride);
         } else {
             if (show_waterfall) {
                 // Simple waterfall using WaterfallView

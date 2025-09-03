@@ -129,12 +129,20 @@ std::vector<float> ZoomFFT::process(const float* input, int input_length, float 
         }
     }
     
-    // Apply window function
+    // Apply window only on the valid portion produced after decimation
     if (config.use_hann) {
-        apply_window(decimated_buffer);
+        const int Nw = decimated_count;
+        if (Nw > 1) {
+            const float two_pi = 2.0f * M_PI;
+            for (int i = 0; i < Nw; ++i) {
+                float wv = 0.5f * (1.0f - std::cos(two_pi * i / (Nw - 1)));
+                decimated_buffer[i] *= wv;
+            }
+        }
     }
     
-    // Copy to FFT buffer and zero-pad if necessary
+    // Copy to FFT buffer and zero-pad the rest
+    std::fill(fft_buffer.begin(), fft_buffer.end(), std::complex<float>(0.0f, 0.0f));
     std::copy(decimated_buffer.begin(), decimated_buffer.end(), fft_buffer.begin());
     
     // Compute FFT

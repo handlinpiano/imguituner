@@ -2,10 +2,10 @@
   "center_frequency_hz": 440.000,
   "precise_fft_size": 16384,
   "precise_decimation": 16,
-  "precise_window_seconds": 0.350,
-  "frontend_decimation": 2,
+  "precise_window_seconds": 0.600,
+  "frontend_decimation": 1,
   "show_frequency_lines": true,
   "show_peak_line": true,
-  "bell_curve_width": 0.350,
+  "bell_curve_width": 2.000,
   "color_scheme_idx": 1
 }

@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic -DNDEBUG
-INCLUDES = -I./include -I./include/tuner
+INCLUDES = -I./include -I./include/tuner -I./gui
 LIBS = -lasound -lpthread -lm
 
 # ImGui vendored location
@@ -55,7 +55,16 @@ ICON_BROWSER_OBJS = gui/icon_browser.o $(IMGUI_OBJS)
 
 # Object files for GUI
 IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
-TUNER_GUI_OBJS = gui/main_window.o gui/spectrum_view.o gui/waterfall_view.o gui/settings_page.o platform/alsa/audio_processor.o core/app_settings_io.o $(IMGUI_OBJS)
+TUNER_GUI_OBJS = gui/main_window.o \
+                 gui/views/spectrum_view.o \
+                 gui/views/waterfall_view.o \
+                 gui/views/settings_page.o \
+                 platform/alsa/audio_processor.o \
+                 core/app_settings_io.o \
+                 core/zoom_fft.o \
+                 core/fft/fft_utils.o \
+                 core/butterworth_filter.o \
+                 $(IMGUI_OBJS)
 
 # Default target
 all: $(TUNER_GUI_TARGET)
@@ -104,13 +113,13 @@ gui/main_window.o: gui/main_window.cpp
 gui/icon_browser.o: gui/icon_browser.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/spectrum_view.o: gui/spectrum_view.cpp gui/spectrum_view.hpp
+gui/views/spectrum_view.o: gui/views/spectrum_view.cpp gui/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/waterfall_view.o: gui/waterfall_view.cpp gui/waterfall_view.hpp gui/spectrum_view.hpp
+gui/views/waterfall_view.o: gui/views/waterfall_view.cpp gui/waterfall_view.hpp gui/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/settings_page.o: gui/settings_page.cpp gui/settings_page.hpp gui/spectrum_view.hpp
+gui/views/settings_page.o: gui/views/settings_page.cpp gui/settings_page.hpp gui/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 # Debug build

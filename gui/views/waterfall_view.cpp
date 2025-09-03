@@ -56,7 +56,9 @@ void WaterfallView::draw(ImDrawList* dl,
 
         // Determine desired number of rows based on row_px density
         float row_height = std::max(1.0f, row_px);
-        const int rows_fit = std::max(1, static_cast<int>(height / row_height));
+        int rows_fit = std::max(1, static_cast<int>(height / row_height));
+        // Always fill height: if we have fewer rows than fit, stretch rows
+        if (filled_rows_ < rows_fit) rows_fit = filled_rows_ > 0 ? filled_rows_ : 1;
         const int draw_rows = std::max(1, std::min(rows_fit, max_rows));
 
         // Ensure texture exists and matches [cols x draw_rows]
