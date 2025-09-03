@@ -55,7 +55,7 @@ ICON_BROWSER_OBJS = gui/icon_browser.o $(IMGUI_OBJS)
 
 # Object files for GUI
 IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
-TUNER_GUI_OBJS = gui/main_window.o gui/spectrum_view.o gui/settings_page.o platform/alsa/audio_processor.o core/app_settings_io.o $(IMGUI_OBJS)
+TUNER_GUI_OBJS = gui/main_window.o gui/spectrum_view.o gui/waterfall_view.o gui/settings_page.o platform/alsa/audio_processor.o core/app_settings_io.o $(IMGUI_OBJS)
 
 # Default target
 all: $(TUNER_GUI_TARGET)
@@ -105,6 +105,9 @@ gui/icon_browser.o: gui/icon_browser.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 gui/spectrum_view.o: gui/spectrum_view.cpp gui/spectrum_view.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/waterfall_view.o: gui/waterfall_view.cpp gui/waterfall_view.hpp gui/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 gui/settings_page.o: gui/settings_page.cpp gui/settings_page.hpp gui/spectrum_view.hpp

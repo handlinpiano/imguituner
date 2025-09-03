@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <tuple>
 #include "spectrum_view.hpp"
+#include "waterfall_view.hpp"
 #include "settings_page.hpp"
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
@@ -220,11 +221,6 @@ std::vector<float> computeZoomMagnitudes(const float* input, int inputLength, do
 class TunerGUI {
 public:
     TunerGUI() : center_frequency(440.0f) {
-        // Initialize waterfall history
-        waterfall_history.resize(waterfall_height);
-        for (auto& row : waterfall_history) {
-            row.resize(zoom_config.numBins, 0.0f);
-        }
         
         // Setup audio
         audio_config.device_name = "hw:1,0";
@@ -396,9 +392,7 @@ private:
     
     // Display data
     std::vector<float> current_spectrum;
-    std::deque<std::vector<float>> waterfall_history;
-    static constexpr int waterfall_height = 400;
-    int waterfall_filled_rows = 0;
+    gui::WaterfallView waterfall_view;
     
     float peak_frequency = 440.0f;
     float peak_magnitude = 0.0f;
@@ -533,12 +527,8 @@ private:
         peak_magnitude = max_mag;
         frames_processed++;
         
-        // Update waterfall (every few frames to avoid too much data)
-        if (frames_processed % 4 == 0) {
-            waterfall_history.pop_front();
-            waterfall_history.push_back(magnitudes);
-            if (waterfall_filled_rows < waterfall_height) ++waterfall_filled_rows;
-        }
+        // Update waterfall (every frame for smoother animation)
+        waterfall_view.update(magnitudes);
     }
     
     void render_gui() {
@@ -604,63 +594,13 @@ private:
                                  spectrum_view);
         } else {
             if (show_waterfall) {
-                // Simple waterfall using accumulated history
+                // Simple waterfall using WaterfallView
                 ImDrawList* draw_list = ImGui::GetWindowDrawList();
                 ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
                 ImVec2 m_av = ImGui::GetContentRegionAvail();
                 const float width = m_av.x;
                 const float height = m_av.y;
-                ImVec2 canvas_size(width, height);
-                const ImVec2 p0 = canvas_pos;
-                const ImVec2 p1 = ImVec2(canvas_pos.x + width, canvas_pos.y + height);
-                draw_list->AddRectFilled(p0, p1, IM_COL32(15,15,18,255));
-                draw_list->AddRect(p0, p1, IM_COL32(60,60,60,255));
-                ImGui::PushClipRect(p0, p1, true);
-                const int rows = std::max(1, std::min(waterfall_filled_rows, (int)waterfall_history.size()));
-                if (rows > 0 && !waterfall_history[0].empty()) {
-                    const int cols = (int)waterfall_history[0].size();
-                    const float bin_width = width / std::max(1, cols);
-                    const float row_height = height / std::max(1, rows);
-                    // Use SpectrumView color scheme for consistent palette
-                    const auto& schemes = spectrum_view.schemes();
-                    const auto& scheme = schemes[std::max(0, std::min((int)schemes.size()-1, spectrum_view.color_scheme_idx))];
-                    for (int r = 0; r < rows; ++r) {
-                        // Take the last 'rows' entries so we stretch them over the full height
-                        const int base_index = (int)waterfall_history.size() - rows;
-                        const auto& spectrum_row = waterfall_history[base_index + r];
-                        // Per-row max for normalization
-                        float row_max = 0.0f;
-                        for (int c = 0; c < cols && c < (int)spectrum_row.size(); ++c) row_max = std::max(row_max, spectrum_row[c]);
-                        if (row_max <= 0.0f) row_max = 1.0f;
-                        for (int c = 0; c < cols && c < (int)spectrum_row.size(); ++c) {
-                            float t = spectrum_row[c] / row_max; // 0..1
-                            // Interpolate selected color scheme
-                            float rcp = t, gcp = t, bcp = t;
-                            for (size_t si = 0; si + 1 < scheme.stops.size(); ++si) {
-                                const auto& s0 = scheme.stops[si];
-                                const auto& s1 = scheme.stops[si+1];
-                                if (t <= s1.position) {
-                                    float span = (s1.position - s0.position);
-                                    float u = span > 0.0f ? (t - s0.position) / span : 0.0f;
-                                    rcp = s0.r + (s1.r - s0.r) * u;
-                                    gcp = s0.g + (s1.g - s0.g) * u;
-                                    bcp = s0.b + (s1.b - s0.b) * u;
-                                    break;
-                                }
-                            }
-                            ImU32 col = IM_COL32((int)(rcp*255.0f), (int)(gcp*255.0f), (int)(bcp*255.0f), 255);
-                            const float x0 = canvas_pos.x + c * bin_width;
-                            const float y0 = canvas_pos.y + r * row_height;
-                            // Clamp last column/row to exact canvas edge to avoid visible gaps/clipping
-                            const float x1 = (c == cols - 1) ? p1.x : (x0 + bin_width);
-                            const float y1 = (r == rows - 1) ? p1.y : (y0 + row_height);
-                            ImVec2 p_min(x0, y0);
-                            ImVec2 p_max(x1, y1);
-                            draw_list->AddRectFilled(p_min, p_max, col);
-                        }
-                    }
-                }
-                ImGui::PopClipRect();
+                waterfall_view.draw(draw_list, canvas_pos, width, height, spectrum_view);
                 // Reserve no extra space; child has fixed height, and scrollbars are disabled
             } else if (!current_spectrum.empty()) {
                 ImDrawList* dl = ImGui::GetWindowDrawList();
