@@ -56,6 +56,18 @@ bool load_settings(const char* path, AppSettings& st) {
     parse_key_value(buf.c_str(), "\"show_cent_labels\"", st.show_cent_labels);
     parse_key_value(buf.c_str(), "\"cent_label_size\"", st.cent_label_size);
     parse_key_value(buf.c_str(), "\"ui_mode\"", st.ui_mode);
+    // last_session_path: very small and simple extraction between quotes
+    const char* p = std::strstr(buf.c_str(), "\"last_session_path\"");
+    if (p) {
+        p = std::strchr(p, ':');
+        if (p) {
+            ++p;
+            while (*p == ' ' || *p == '\t' || *p == '"') ++p; // skip spaces and opening quote
+            const char* start = p;
+            while (*p && *p != '"' && *p != '\n' && *p != '\r') ++p;
+            st.last_session_path.assign(start, p - start);
+        }
+    }
     return true;
 }
 
@@ -77,7 +89,8 @@ bool save_settings(const char* path, const AppSettings& st) {
         "  \"concentric_color_scheme_idx\": %d,\n"
         "  \"show_cent_labels\": %s,\n"
         "  \"cent_label_size\": %d,\n"
-        "  \"ui_mode\": %d\n"
+        "  \"ui_mode\": %d,\n"
+        "  \"last_session_path\": \"%s\"\n"
         "}\n",
         st.center_frequency_hz,
         st.precise_fft_size,
@@ -91,7 +104,8 @@ bool save_settings(const char* path, const AppSettings& st) {
         st.concentric_color_scheme_idx,
         st.show_cent_labels ? "true" : "false",
         st.cent_label_size,
-        st.ui_mode);
+        st.ui_mode,
+        st.last_session_path.c_str());
     std::fclose(f);
     return true;
 }

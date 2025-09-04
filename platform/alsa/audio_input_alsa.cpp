@@ -80,10 +80,50 @@ private:
 
     bool setup_alsa() {
         int err;
-        err = snd_pcm_open(&pcm_handle, config.device_name.c_str(), SND_PCM_STREAM_CAPTURE, 0);
-        if (err < 0) {
-            std::cerr << "Cannot open audio device " << config.device_name << ": " << snd_strerror(err) << std::endl;
+        // Build candidate device list for portability
+        std::vector<std::string> candidates;
+        if (!config.device_name.empty()) candidates.push_back(config.device_name);
+        candidates.push_back("default");
+
+        // Enumerate ALSA PCM hints to find capture-capable devices
+        void** hints = nullptr;
+        if (snd_device_name_hint(-1, "pcm", &hints) == 0 && hints) {
+            std::vector<std::string> plughw;
+            std::vector<std::string> hw;
+            for (void** n = hints; *n != nullptr; ++n) {
+                const char* name = snd_device_name_get_hint(*n, "NAME");
+                const char* ioid = snd_device_name_get_hint(*n, "IOID");
+                if (!name) continue;
+                // Accept inputs or unspecified IOID
+                if (ioid && std::strcmp(ioid, "Input") != 0) {
+                    // skip outputs
+                    continue;
+                }
+                std::string s(name);
+                if (s.rfind("plughw:", 0) == 0) plughw.push_back(s);
+                else if (s.rfind("hw:", 0) == 0) hw.push_back(s);
+            }
+            for (auto& s : plughw) candidates.push_back(s);
+            for (auto& s : hw) candidates.push_back(s);
+            snd_device_name_free_hint(hints);
+        }
+
+        // Try candidates in order
+        std::string opened_device;
+        for (const auto& dev : candidates) {
+            err = snd_pcm_open(&pcm_handle, dev.c_str(), SND_PCM_STREAM_CAPTURE, 0);
+            if (err == 0) { opened_device = dev; break; }
+        }
+        if (opened_device.empty()) {
+            std::cerr << "Cannot open any audio capture device. Last tried: "
+                      << (candidates.empty() ? std::string("<none>") : candidates.back())
+                      << std::endl;
             return false;
+        }
+        // Persist the actually opened device for diagnostics
+        if (opened_device != config.device_name) {
+            std::cout << "Using capture device: " << opened_device << std::endl;
+            config.device_name = opened_device;
         }
 
         snd_pcm_hw_params_t* hw_params;
@@ -153,6 +193,8 @@ private:
             cleanup_alsa();
             return false;
         }
+
+        // Use default buffer size chosen by ALSA for stability
 
         err = snd_pcm_hw_params(pcm_handle, hw_params);
         if (err < 0) {

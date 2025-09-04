@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace tuner {
 
 struct AppSettings {
@@ -20,6 +22,9 @@ struct AppSettings {
     int cent_label_size = 2; // 0:tiny,1:small,2:medium,3:large
     // UI mode: 0 = Desktop (Docking), 1 = Kiosk (single window)
     int ui_mode = 0;
+
+    // General settings: last opened session path for Resume action
+    std::string last_session_path;
 };
 
 } // namespace tuner

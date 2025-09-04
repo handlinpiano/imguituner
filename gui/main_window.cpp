@@ -9,14 +9,23 @@
 #include <memory>
 #include <unordered_map>
 #include <tuple>
+#include <mutex>
+#include <thread>
+#include <atomic>
 #include "plots/spectrum_plot.hpp"
 #include "plots/waterfall_plot.hpp"
 #include "settings_page.hpp"
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
+#include "session_settings.hpp"
+#include "pages/landing_page.hpp"
+#include "pages/new_session_setup.hpp"
+#include "pages/mic_setup.hpp"
 #include "zoom_fft.hpp"
 #include "fft/fft_utils.hpp"
 #include "plots/concentric_plot.hpp"
+#include "analysis/long_analysis_engine.hpp"
+#include "plots/long_analysis_plot.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -36,7 +45,8 @@ public:
     TunerGUI() : center_frequency(440.0f) {
         
         // Setup audio
-        audio_config.device_name = "hw:1,0";
+        
+    audio_config.device_name = "hw:1,0";
         audio_config.sample_rate = 48000;
         audio_config.period_size = 64; // lower latency callbacks
         
@@ -115,6 +125,9 @@ public:
         // Load settings (ignore errors)
         load_settings(settings_path, settings);
         center_frequency = settings.center_frequency_hz;
+        if (!(center_frequency > 0.0f) || !std::isfinite(center_frequency)) {
+            center_frequency = 440.0f;
+        }
         precise_fft_size = settings.precise_fft_size;
         precise_decimation = settings.precise_decimation;
         precise_window_seconds = settings.precise_window_seconds;
@@ -171,6 +184,9 @@ public:
         
         // Persist settings then cleanup
         settings.center_frequency_hz = center_frequency;
+        if (!(settings.center_frequency_hz > 0.0f) || !std::isfinite(settings.center_frequency_hz)) {
+            settings.center_frequency_hz = 440.0f;
+        }
         settings.precise_fft_size = precise_fft_size;
         settings.precise_decimation = precise_decimation;
         settings.precise_window_seconds = precise_window_seconds;
@@ -194,6 +210,10 @@ public:
     }
     
 private:
+    enum class AppPage { Landing, NewSessionSetup, Main };
+    AppPage current_page = AppPage::Landing;
+    tuner::SessionSettings current_session;
+
     GLFWwindow* window = nullptr;
     float center_frequency;
     // legacy zoom_config removed; using core ZoomFFTConfig on demand
@@ -218,23 +238,28 @@ private:
     std::vector<float> current_spectrum;
     gui::WaterfallView waterfall_view;
     gui::ConcentricView concentric_view;
+    gui::LongAnalysisView long_view;
     
     float peak_frequency = 440.0f;
     float peak_magnitude = 0.0f;
     int frames_processed = 0;
     float last_rms = 0.0f;
+    std::atomic<int> last_callback_frames{0};
     gui::SpectrumView spectrum_view; // owns its own options
     gui::SettingsPage settings_page;
     tuner::AppSettings settings;
     const char* settings_path = "config/settings.json";
     bool show_icon_browser = false;
     bool mic_enabled = true;
+    bool show_mic_setup = false;
     bool show_spectrum = true;
     bool show_waterfall = false;
     bool show_concentric = false;
+    bool show_long_analysis = false;
     bool show_spectrum_settings = false;
     bool show_waterfall_settings = false;
     bool show_concentric_settings = false;
+    bool show_long_settings = false;
     int ui_mode = 0; // 0: Desktop, 1: Kiosk Landscape, 2: Kiosk Portrait
     // Waterfall speed control: update one row every N audio frames (1 = fastest)
     int waterfall_stride = 1;
@@ -242,6 +267,12 @@ private:
     
     bool show_settings_page = false;
     gui::CommandRegistry command_registry;
+
+    // Long analysis state
+    float long_capture_seconds = 3.0f; // seconds to capture
+    int long_num_segments = 4; // 1..8
+    int long_num_harmonics = 8; // 1..8
+    gui::LongAnalysisEngine long_engine;
 
 
     // Map normalized x in [0,1] through fisheye transform (matches TS shader behavior)
@@ -259,6 +290,7 @@ private:
     }
     
     void process_audio(const float* input, int num_samples) {
+        last_callback_frames.store(num_samples);
         // Track actual sample rate and reflect front-end decimation
         const unsigned int actual_fs = audio_input->get_config().sample_rate;
         const unsigned int effective_fs = actual_fs; // no frontend decimation
@@ -272,6 +304,8 @@ private:
                 input_ring.push_back(input[i]);
             }
         }
+        // Feed long analysis engine (safe when idle)
+        long_engine.feed_audio(input, num_samples, (int)last_actual_fs);
 
         // Ensure ring buffer holds at most the window needed for a full Zoom FFT
         // Maintain ring buffer up to the precise time-capped window requirement
@@ -339,6 +373,8 @@ private:
                 ++count;
             }
             last_rms = count > 0 ? std::sqrt(acc / static_cast<double>(count)) : 0.0f;
+            // Feed Mic Setup live level meter
+            gui::mic_setup_push_level(last_rms);
         }
 
         // If not enough data even for fast path, fall back to current decimated chunk
@@ -366,9 +402,10 @@ private:
             }
         }
         
-        // Convert bin to frequency
+        // Convert bin to frequency (guard center_frequency)
+        float cf_guard = (center_frequency > 0.0f && std::isfinite(center_frequency)) ? center_frequency : 440.0f;
         float cents = -120.0f + 240.0f * (static_cast<float>(peak_bin) / (1200 - 1));
-        peak_frequency = center_frequency * std::pow(2.0f, cents / 1200.0f);
+        peak_frequency = cf_guard * std::pow(2.0f, cents / 1200.0f);
         peak_magnitude = max_mag;
         frames_processed++;
         
@@ -377,6 +414,8 @@ private:
             waterfall_counter = 0;
             waterfall_view.update(magnitudes);
         }
+        // Kick off processing when capture is ready
+        long_engine.poll_process();
     }
     
     void render_gui() {
@@ -398,9 +437,74 @@ private:
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Audio")) {
+                if (ImGui::MenuItem("Microphone Setup...")) {
+                    show_mic_setup = true;
+                }
+                ImGui::EndMenu();
+            }
             ImGui::EndMainMenuBar();
         }
         
+        // Landing page routing
+        if (current_page == AppPage::Landing) {
+            gui::LandingCallbacks cb;
+            cb.on_start_new = [this]() {
+                // Prepare a draft and go to setup page
+                current_session = tuner::SessionSettings{};
+                current_session.name = "New Session";
+                current_session.path.clear();
+                current_page = AppPage::NewSessionSetup;
+            };
+            cb.on_resume_path = [this](const std::string& path) {
+                tuner::SessionSettings ss;
+                if (load_session_settings(path.c_str(), ss)) {
+                    current_session = ss;
+                    settings.last_session_path = path;
+                    current_page = AppPage::Main;
+                }
+            };
+            cb.on_load_path = [this](const std::string& path) {
+                tuner::SessionSettings ss;
+                if (load_session_settings(path.c_str(), ss)) {
+                    current_session = ss;
+                    settings.last_session_path = path;
+                    current_page = AppPage::Main;
+                }
+            };
+            gui::render_landing_page(settings.last_session_path.c_str(), cb);
+            return;
+        }
+
+        // New Session Setup page
+        if (current_page == AppPage::NewSessionSetup) {
+            gui::NewSessionCallbacks scb;
+            scb.on_cancel = [this]() { current_page = AppPage::Landing; };
+            scb.on_confirm = [this](const tuner::SessionSettings& s) {
+                current_session = s;
+                // Auto-generate session file name when confirming new session
+                // Format: YYYY-MM-DD_<SizeLabel>_<A4Hz>hz.json under sessions/
+                float a4_hz = 440.0f * std::pow(2.0f, current_session.a4_offset_cents / 1200.0f);
+                int a4_round = (int)std::lround(a4_hz);
+                // Build date
+                std::time_t now = std::time(nullptr);
+                std::tm tmv{}; std::tm* lt = std::localtime(&now); if (lt) tmv = *lt;
+                char date_buf[32];
+                if (!lt || std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tmv) == 0) {
+                    std::snprintf(date_buf, sizeof(date_buf), "0000-00-00");
+                }
+                std::string label = current_session.instrument_size_label.empty() ? current_session.instrument_type : current_session.instrument_size_label;
+                for (char& c : label) { if (c == ' ') c = '_'; }
+                char name_buf[160];
+                std::snprintf(name_buf, sizeof(name_buf), "%s_%s_%dhz.json", date_buf, label.c_str(), a4_round);
+                current_session.name = name_buf;
+                current_session.path = std::string("sessions/") + name_buf;
+                current_page = AppPage::Main;
+            };
+            gui::render_new_session_setup(current_session, scb);
+            return;
+        }
+
         // Desktop mode: separate windows (no docking required)
         if (ui_mode == 0) {
             // Views
@@ -574,6 +678,8 @@ private:
                 }
                 ImGui::End();
             }
+            if (show_long_analysis) { long_view.show_window = true; }
+            long_view.render(long_engine, spectrum_view, center_frequency, last_effective_fs, precise_fft_size, precise_decimation);
             // Settings in a separate window
             if (show_settings_page) {
                 if (ImGui::Begin("Settings")) {
@@ -625,6 +731,22 @@ private:
                 }
                 ImGui::End();
             }
+            // Mic Setup modal window
+            if (show_mic_setup) {
+                std::string dev = audio_input->get_config().device_name;
+                bool open = true;
+                if (gui::render_mic_setup_window(dev, open)) {
+                    // Restart audio with selected device
+                    audio_input->stop();
+                    AudioConfig cfg = audio_input->get_config();
+                    cfg.device_name = dev;
+                    audio_input = createAudioInput(cfg);
+                    audio_input->set_process_callback([this](const float* input, int num_samples){ this->process_audio(input, num_samples); });
+                    audio_input->start();
+                }
+                if (!open) show_mic_setup = false;
+            }
+
             // Command palette
             command_registry.render_command_palette();
             return; // skip kiosk layout below
@@ -756,7 +878,11 @@ private:
             ImGui::EndChild();
             ImGui::BeginChild("BottomBar", ImVec2(0, h_bot), true);
             ImGui::Columns(4, nullptr, false);
-            ImGui::Text("[Prev]");
+            // Left status cell: brief audio diagnostics
+            {
+                auto ls = audio_input ? audio_input->get_latency_stats() : IAudioInput::LatencyStats{};
+                ImGui::Text("Audio: %d fr | RMS %.3f | xruns %d", (int)last_callback_frames.load(), last_rms, ls.xruns);
+            }
             ImGui::NextColumn();
             ImGui::Text("[Play]");
             ImGui::NextColumn();
@@ -839,6 +965,15 @@ private:
             [this]{ return true; },
             [this]{ show_settings_page = false; show_concentric = true; }
         });
+        // View: Long Analysis
+        command_registry.register_command(Command{
+            "view.long",
+            "Show Long Analysis",
+            "Ctrl+4",
+            "View",
+            [this]{ return true; },
+            [this]{ show_settings_page = false; show_long_analysis = true; show_spectrum = false; show_waterfall = false; show_concentric = false; }
+        });
         // View: Toggle variants (multi-view)
         command_registry.register_command(Command{
             "view.toggle_spectrum",
@@ -863,6 +998,14 @@ private:
             "View",
             [this]{ return true; },
             [this]{ show_concentric = !show_concentric; }
+        });
+        command_registry.register_command(Command{
+            "view.toggle_long",
+            "Toggle Long Analysis",
+            "Ctrl+Shift+4",
+            "View",
+            [this]{ return true; },
+            [this]{ show_long_analysis = !show_long_analysis; }
         });
         // View: Settings
         command_registry.register_command(Command{

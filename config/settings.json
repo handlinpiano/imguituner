@@ -1,15 +1,16 @@
 {
-  "center_frequency_hz": 441.200,
+  "center_frequency_hz": 452.000,
   "precise_fft_size": 16384,
   "precise_decimation": 16,
-  "precise_window_seconds": 0.690,
+  "precise_window_seconds": 0.630,
   "show_frequency_lines": true,
   "show_peak_line": true,
-  "bell_curve_width": 2.000,
+  "bell_curve_width": 1.000,
   "color_scheme_idx": 1,
   "waterfall_color_scheme_idx": 2,
   "concentric_color_scheme_idx": 2,
   "show_cent_labels": true,
   "cent_label_size": 2,
-  "ui_mode": 0
+  "ui_mode": 1,
+  "last_session_path": ""
 }

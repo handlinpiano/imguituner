@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic -DNDEBUG
-INCLUDES = -I./include -I./include/tuner -I./gui -I./gui/plots
+INCLUDES = -I./include -I./include/tuner -I./gui -I./gui/plots -I./gui/pages
 LIBS = -lasound -lpthread -lm
 
 # ImGui vendored location
@@ -27,7 +27,8 @@ SRCS = core/zoom_fft.cpp \
        platform/alsa/audio_input_alsa.cpp \
        core/butterworth_filter.cpp \
        core/fft/fft_utils.cpp \
-       core/app_settings_io.cpp
+       core/app_settings_io.cpp \
+       core/session_settings_io.cpp
 
 # Object files
 OBJS = $(SRCS:.cpp=.o)
@@ -57,11 +58,17 @@ ICON_BROWSER_OBJS = gui/icon_browser.o $(IMGUI_OBJS)
 IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
 TUNER_GUI_OBJS = gui/main_window.o \
                  gui/plots/spectrum_plot.o \
+                 gui/plots/long_analysis_plot.o \
                  gui/plots/waterfall_plot.o \
                  gui/plots/concentric_plot.o \
+                 gui/pages/landing_page.o \
+                 gui/pages/mic_setup.o \
+                 gui/pages/new_session_setup.o \
                  gui/plots/settings_page.o \
+                 gui/analysis/long_analysis_engine.o \
                  platform/alsa/audio_input_alsa.o \
                  core/app_settings_io.o \
+                 core/session_settings_io.o \
                  core/zoom_fft.o \
                  core/fft/fft_utils.o \
                  core/butterworth_filter.o \
@@ -126,7 +133,22 @@ gui/plots/settings_page.o: gui/plots/settings_page.cpp gui/settings_page.hpp gui
 gui/plots/concentric_plot.o: gui/plots/concentric_plot.cpp gui/plots/concentric_plot.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
+gui/plots/long_analysis_plot.o: gui/plots/long_analysis_plot.cpp gui/plots/long_analysis_plot.hpp gui/analysis/long_analysis_engine.hpp gui/plots/spectrum_plot.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
 gui/views/concentric_view.o: gui/views/concentric_view.cpp gui/views/concentric_view.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/analysis/long_analysis_engine.o: gui/analysis/long_analysis_engine.cpp gui/analysis/long_analysis_engine.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/pages/landing_page.o: gui/pages/landing_page.cpp gui/pages/landing_page.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/pages/new_session_setup.o: gui/pages/new_session_setup.cpp gui/pages/new_session_setup.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/pages/mic_setup.o: gui/pages/mic_setup.cpp gui/pages/mic_setup.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 # Debug build
