@@ -14,6 +14,10 @@ struct AppSettings {
     bool show_peak_line = true;
     float bell_curve_width = 0.35f;
     int color_scheme_idx = 2; // Viridis
+    int waterfall_color_scheme_idx = 2;
+    int concentric_color_scheme_idx = 2;
+    // UI mode: 0 = Desktop (Docking), 1 = Kiosk (single window)
+    int ui_mode = 0;
 };
 
 } // namespace tuner

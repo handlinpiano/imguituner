@@ -1,5 +1,5 @@
 #include "zoom_fft.hpp"
-#include "audio_processor.hpp"
+#include "audio_input.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -201,10 +201,10 @@ int main(int argc, char* argv[]) {
     std::atomic<float> latest_cents_error(0.0f);
     
     // Create audio processor
-    AudioProcessor audio(audio_config);
+    auto audio = createAudioInput(audio_config);
     
     // Set processing callback
-    audio.set_process_callback([&](const float* input, int num_samples) {
+    audio->set_process_callback([&](const float* input, int num_samples) {
         if (!g_running.load()) return;
         
         auto start = std::chrono::high_resolution_clock::now();
@@ -258,7 +258,7 @@ int main(int argc, char* argv[]) {
     });
     
     // Start audio processing
-    if (!audio.start()) {
+    if (!audio->start()) {
         std::cerr << "Failed to start audio processing" << std::endl;
         return 1;
     }
@@ -310,13 +310,13 @@ int main(int argc, char* argv[]) {
     }
     
     // Stop audio
-    audio.stop();
+    audio->stop();
     
     // Print final statistics
     std::cout << "\n\nFinal Statistics:\n";
     std::cout << "Frames processed: " << frames_processed.load() << "\n";
     
-    auto stats = audio.get_latency_stats();
+    auto stats = audio->get_latency_stats();
     std::cout << "Audio latency: "
               << "min=" << stats.min_ms << "ms, "
               << "max=" << stats.max_ms << "ms, "

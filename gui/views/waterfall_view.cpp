@@ -1,4 +1,6 @@
-#include "waterfall_view.hpp"
+ 
+ #include "waterfall_view.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <GLES3/gl3.h>
@@ -83,7 +85,7 @@ void WaterfallView::draw(ImDrawList* dl,
 
         // Fill software buffer from history (bottom-aligned)
         const auto& schemes = spectrum_view.schemes();
-        const auto& scheme = schemes[std::max(0, std::min(static_cast<int>(schemes.size())-1, spectrum_view.color_scheme_idx))];
+        const auto& scheme = schemes[std::max(0, std::min(static_cast<int>(schemes.size())-1, this->color_scheme_idx))];
         const int base_index = static_cast<int>(history_.size()) - draw_rows;
         for (int r = 0; r < draw_rows; ++r) {
             int hist_index = base_index + r;
@@ -142,7 +144,7 @@ void WaterfallView::draw(ImDrawList* dl,
         const float y_top = y_bottom - rows * row_height;
 
         const auto& schemes = spectrum_view.schemes();
-        const auto& scheme = schemes[std::max(0, std::min((int)schemes.size()-1, spectrum_view.color_scheme_idx))];
+        const auto& scheme = schemes[std::max(0, std::min((int)schemes.size()-1, this->color_scheme_idx))];
         const int base_index = static_cast<int>(history_.size()) - rows;
         for (int r = 0; r < rows; ++r) {
             int hist_index = base_index + r;

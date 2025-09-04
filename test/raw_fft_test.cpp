@@ -1,4 +1,4 @@
-#include "audio_processor.hpp"
+#include "audio_input.hpp"
 #include <iostream>
 #include <vector>
 #include <complex>
@@ -69,9 +69,9 @@ int main(int argc, char* argv[]) {
     std::atomic<float> max_magnitude(0.0f);
     std::atomic<float> max_frequency(0.0f);
     
-    AudioProcessor audio(audio_config);
+    auto audio = createAudioInput(audio_config);
     
-    audio.set_process_callback([&](const float* input, int num_samples) {
+    audio->set_process_callback([&](const float* input, int num_samples) {
         if (!g_running.load() || num_samples < 512) return;
         
         // Take first 512 samples for FFT
@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
         }
     });
     
-    if (!audio.start()) {
+    if (!audio->start()) {
         std::cerr << "Failed to start audio\n";
         return 1;
     }
@@ -142,6 +142,6 @@ int main(int argc, char* argv[]) {
         max_frequency.store(0.0f);
     }
     
-    audio.stop();
+    audio->stop();
     return 0;
 }

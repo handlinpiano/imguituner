@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic -DNDEBUG
-INCLUDES = -I./include -I./include/tuner -I./gui
+INCLUDES = -I./include -I./include/tuner -I./gui -I./gui/views
 LIBS = -lasound -lpthread -lm
 
 # ImGui vendored location
@@ -24,7 +24,7 @@ CXXFLAGS += -DIMGUI_IMPL_OPENGL_ES3
 
 # Source files (new layout)
 SRCS = core/zoom_fft.cpp \
-       platform/alsa/audio_processor.cpp \
+       platform/alsa/audio_input_alsa.cpp \
        core/butterworth_filter.cpp \
        core/fft/fft_utils.cpp \
        core/app_settings_io.cpp
@@ -58,8 +58,9 @@ IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
 TUNER_GUI_OBJS = gui/main_window.o \
                  gui/views/spectrum_view.o \
                  gui/views/waterfall_view.o \
+                 gui/views/concentric_view.o \
                  gui/views/settings_page.o \
-                 platform/alsa/audio_processor.o \
+                 platform/alsa/audio_input_alsa.o \
                  core/app_settings_io.o \
                  core/zoom_fft.o \
                  core/fft/fft_utils.o \
@@ -86,8 +87,8 @@ $(BASIC_440_TARGET): $(OBJS) $(BASIC_440_SRC:.cpp=.o)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
 
-# Build direct zoom test (uses only audio_processor, no zoom_fft classes)
-$(DIRECT_ZOOM_TARGET): platform/alsa/audio_processor.o $(DIRECT_ZOOM_SRC:.cpp=.o)
+# Build direct zoom test (uses audio input adapter + local zoom impl)
+$(DIRECT_ZOOM_TARGET): platform/alsa/audio_input_alsa.o $(DIRECT_ZOOM_SRC:.cpp=.o)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
 # Build tuner_gui with ImGui backends (OpenGL ES 3 + GLFW)
@@ -113,13 +114,16 @@ gui/main_window.o: gui/main_window.cpp
 gui/icon_browser.o: gui/icon_browser.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/views/spectrum_view.o: gui/views/spectrum_view.cpp gui/spectrum_view.hpp
+gui/views/spectrum_view.o: gui/views/spectrum_view.cpp gui/views/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/views/waterfall_view.o: gui/views/waterfall_view.cpp gui/waterfall_view.hpp gui/spectrum_view.hpp
+gui/views/waterfall_view.o: gui/views/waterfall_view.cpp gui/views/waterfall_view.hpp gui/views/spectrum_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/views/settings_page.o: gui/views/settings_page.cpp gui/settings_page.hpp gui/spectrum_view.hpp
+gui/views/settings_page.o: gui/views/settings_page.cpp gui/settings_page.hpp gui/views/spectrum_view.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/views/concentric_view.o: gui/views/concentric_view.cpp gui/views/concentric_view.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 # Debug build
@@ -128,7 +132,11 @@ debug: clean $(TEST_TARGET)
 
 # Clean build files
 clean:
-	rm -f $(OBJS) $(TEST_SRC:.cpp=.o) $(MIC_TEST_SRC:.cpp=.o) $(SIMPLE_TEST_SRC:.cpp=.o) $(TEST_TARGET) $(MIC_TEST_TARGET) $(SIMPLE_TEST_TARGET)
+	rm -f $(OBJS) $(TEST_SRC:.cpp=.o) $(MIC_TEST_SRC:.cpp=.o) $(SIMPLE_TEST_SRC:.cpp=.o) \
+	      $(TEST_TARGET) $(MIC_TEST_TARGET) $(SIMPLE_TEST_TARGET) \
+	      $(DIRECT_ZOOM_TARGET) $(BASIC_440_TARGET) $(TUNER_GUI_TARGET) $(ICON_BROWSER_TARGET)
+	rm -f gui/*.o gui/views/*.o
+	rm -f third_party/imgui/*.o third_party/imgui/backends/*.o
 
 # Run test
 run: $(TEST_TARGET)

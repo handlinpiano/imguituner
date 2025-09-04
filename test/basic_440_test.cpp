@@ -1,5 +1,5 @@
 #include "zoom_fft.hpp"
-#include "audio_processor.hpp"
+#include "audio_input.hpp"
 #include <iostream>
 #include <atomic>
 #include <signal.h>
@@ -33,9 +33,9 @@ int main(int argc, char* argv[]) {
     
     std::atomic<float> last_magnitude(0);
     
-    AudioProcessor audio(audio_config);
+    auto audio = createAudioInput(audio_config);
     
-    audio.set_process_callback([&](const float* input, int num_samples) {
+    audio->set_process_callback([&](const float* input, int num_samples) {
         auto mags = zoom.process(input, num_samples, 440.0f);
         
         // Find peak
@@ -51,7 +51,7 @@ int main(int argc, char* argv[]) {
         last_magnitude = peak;
     });
     
-    if (!audio.start()) {
+    if (!audio->start()) {
         std::cerr << "Audio failed\n";
         return 1;
     }

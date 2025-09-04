@@ -89,17 +89,45 @@ void SpectrumView::draw(ImDrawList* dl,
             float xf = fisheye_transform(norm, bell_curve_width);
             return canvas_pos.x + xf * width;
         };
-        float xL = x_for_cents(-0.5f);
-        float xR = x_for_cents(0.5f);
-        dl->AddRectFilled(ImVec2(xL, canvas_pos.y), ImVec2(xR, canvas_pos.y + height), IM_COL32(80,160,255,50));
-        float xc = x_for_cents(0.0f);
-        dl->AddLine(ImVec2(xc, canvas_pos.y), ImVec2(xc, canvas_pos.y + height), IM_COL32(120,200,255,220), 2.0f);
-        for (int c = -100; c <= 100; c += 10) {
-            if (c == 0) continue;
-            float x = x_for_cents((float)c);
-            ImU32 col = (std::abs(c) == 100) ? IM_COL32(200,200,200,160) : IM_COL32(160,160,160,120);
-            dl->AddLine(ImVec2(x, canvas_pos.y), ImVec2(x, canvas_pos.y + height), col, 1.0f);
+        // Target frequency highlight (window around 0 cents)
+        if (show_target_line) {
+            float xL = x_for_cents(-0.5f);
+            float xR = x_for_cents(0.5f);
+            ImU32 fill = IM_COL32((int)(color_target.x*255),(int)(color_target.y*255),(int)(color_target.z*255),(int)(color_target.w*80));
+            ImU32 line = IM_COL32((int)(color_target.x*255),(int)(color_target.y*255),(int)(color_target.z*255),(int)(color_target.w*255));
+            dl->AddRectFilled(ImVec2(xL, canvas_pos.y), ImVec2(xR, canvas_pos.y + height), fill);
+            float xc = x_for_cents(0.0f);
+            dl->AddLine(ImVec2(xc, canvas_pos.y), ImVec2(xc, canvas_pos.y + height), line, 2.0f);
         }
+        // 10-cent lines across range
+        if (show_10_cent_lines) {
+            ImU32 col10 = IM_COL32((int)(color_10_cent.x*255),(int)(color_10_cent.y*255),(int)(color_10_cent.z*255),(int)(color_10_cent.w*255));
+            for (int c = -120; c <= 120; c += 10) {
+                if (c == 0) continue;
+                float x = x_for_cents((float)c);
+                dl->AddLine(ImVec2(x, canvas_pos.y), ImVec2(x, canvas_pos.y + height), col10, 1.0f);
+            }
+        }
+        // 20-cent lines across range
+        if (show_20_cent_lines) {
+            ImU32 col20 = IM_COL32((int)(color_20_cent.x*255),(int)(color_20_cent.y*255),(int)(color_20_cent.z*255),(int)(color_20_cent.w*255));
+            for (int c = -120; c <= 120; c += 20) {
+                if (c == 0) continue;
+                float x = x_for_cents((float)c);
+                dl->AddLine(ImVec2(x, canvas_pos.y), ImVec2(x, canvas_pos.y + height), col20, 1.3f);
+            }
+        }
+        // Fine lines at exact +/-1, +/-2, +/-5 cents only
+        auto draw_pair = [&](int cents_abs, const ImVec4& colv, float thickness){
+            ImU32 col = IM_COL32((int)(colv.x*255),(int)(colv.y*255),(int)(colv.z*255),(int)(colv.w*255));
+            float x_pos = x_for_cents((float)cents_abs);
+            float x_neg = x_for_cents((float)(-cents_abs));
+            dl->AddLine(ImVec2(x_pos, canvas_pos.y), ImVec2(x_pos, canvas_pos.y + height), col, thickness);
+            dl->AddLine(ImVec2(x_neg, canvas_pos.y), ImVec2(x_neg, canvas_pos.y + height), col, thickness);
+        };
+        if (show_1_cent_lines) draw_pair(1, color_1_cent, 1.0f);
+        if (show_2_cent_lines) draw_pair(2, color_2_cent, 1.2f);
+        if (show_5_cent_lines) draw_pair(5, color_5_cent, 1.4f);
     }
 
     if (show_peak_line && peak_magnitude > 0.0f) {

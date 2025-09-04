@@ -1,4 +1,4 @@
-#include "audio_processor.hpp"
+#include "audio_input.hpp"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -221,9 +221,9 @@ int main(int argc, char* argv[]) {
     std::atomic<float> peak_magnitude(0);
     std::atomic<int> peak_bin(0);
     
-    AudioProcessor audio(audio_config);
+    auto audio = createAudioInput(audio_config);
     
-    audio.set_process_callback([&](const float* input, int num_samples) {
+    audio->set_process_callback([&](const float* input, int num_samples) {
         auto mags = zoom::computeZoomMagnitudes(input, num_samples, 440.0, config);
         
         float peak = 0;
@@ -239,7 +239,7 @@ int main(int argc, char* argv[]) {
         peak_bin = peak_idx;
     });
     
-    if (!audio.start()) {
+    if (!audio->start()) {
         std::cerr << "Audio failed\n";
         return 1;
     }

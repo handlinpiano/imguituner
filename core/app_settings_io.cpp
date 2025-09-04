@@ -52,6 +52,9 @@ bool load_settings(const char* path, AppSettings& st) {
     parse_key_value(buf.c_str(), "\"show_peak_line\"", st.show_peak_line);
     parse_key_value(buf.c_str(), "\"bell_curve_width\"", st.bell_curve_width);
     parse_key_value(buf.c_str(), "\"color_scheme_idx\"", st.color_scheme_idx);
+    parse_key_value(buf.c_str(), "\"waterfall_color_scheme_idx\"", st.waterfall_color_scheme_idx);
+    parse_key_value(buf.c_str(), "\"concentric_color_scheme_idx\"", st.concentric_color_scheme_idx);
+    parse_key_value(buf.c_str(), "\"ui_mode\"", st.ui_mode);
     return true;
 }
 
@@ -68,7 +71,10 @@ bool save_settings(const char* path, const AppSettings& st) {
         "  \"show_frequency_lines\": %s,\n"
         "  \"show_peak_line\": %s,\n"
         "  \"bell_curve_width\": %.3f,\n"
-        "  \"color_scheme_idx\": %d\n"
+        "  \"color_scheme_idx\": %d,\n"
+        "  \"waterfall_color_scheme_idx\": %d,\n"
+        "  \"concentric_color_scheme_idx\": %d,\n"
+        "  \"ui_mode\": %d\n"
         "}\n",
         st.center_frequency_hz,
         st.precise_fft_size,
@@ -78,7 +84,10 @@ bool save_settings(const char* path, const AppSettings& st) {
         st.show_frequency_lines ? "true" : "false",
         st.show_peak_line ? "true" : "false",
         st.bell_curve_width,
-        st.color_scheme_idx);
+        st.color_scheme_idx,
+        st.waterfall_color_scheme_idx,
+        st.concentric_color_scheme_idx,
+        st.ui_mode);
     std::fclose(f);
     return true;
 }

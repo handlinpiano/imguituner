@@ -1,4 +1,4 @@
-#include "audio_processor.hpp"
+#include "audio_input.hpp"
 #include <iostream>
 #include <vector>
 #include <complex>
@@ -9,13 +9,14 @@
 #include <memory>
 #include <unordered_map>
 #include <tuple>
-#include "spectrum_view.hpp"
-#include "waterfall_view.hpp"
+#include "views/spectrum_view.hpp"
+#include "views/waterfall_view.hpp"
 #include "settings_page.hpp"
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
 #include "zoom_fft.hpp"
 #include "fft/fft_utils.hpp"
+#include "views/concentric_view.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -24,6 +25,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <fstream>
+#include "command_registry.hpp"
 
 using namespace tuner;
 
@@ -40,8 +42,8 @@ public:
         
         // Default zoom parameters are configured in cfg_core when processing
 
-        audio_processor = std::make_unique<AudioProcessor>(audio_config);
-        audio_processor->set_process_callback([this](const float* input, int num_samples) {
+        audio_input = createAudioInput(audio_config);
+        audio_input->set_process_callback([this](const float* input, int num_samples) {
             this->process_audio(input, num_samples);
         });
     }
@@ -121,6 +123,14 @@ public:
         spectrum_view.show_peak_line = settings.show_peak_line;
         spectrum_view.bell_curve_width = settings.bell_curve_width;
         spectrum_view.color_scheme_idx = settings.color_scheme_idx;
+        waterfall_view.color_scheme_idx = settings.waterfall_color_scheme_idx;
+        concentric_view.color_scheme_idx = settings.concentric_color_scheme_idx;
+        
+        // Set UI mode based on settings (no docking API required)
+        ui_mode = settings.ui_mode; // 0: Desktop, 1: Kiosk Landscape, 2: Kiosk Portrait
+        
+        // Register commands
+        build_commands();
         
         return true;
     }
@@ -128,7 +138,7 @@ public:
     void run() {
         if (!init_gui()) return;
         
-        if (!audio_processor->start()) {
+        if (!audio_input->start()) {
             std::cerr << "Failed to start audio\n";
             return;
         }
@@ -140,6 +150,9 @@ public:
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
+            
+            // Global shortcuts
+            command_registry.handle_shortcuts(false);
             
             // Render GUI
             render_gui();
@@ -166,10 +179,13 @@ public:
         settings.show_peak_line = spectrum_view.show_peak_line;
         settings.bell_curve_width = spectrum_view.bell_curve_width;
         settings.color_scheme_idx = spectrum_view.color_scheme_idx;
+        settings.waterfall_color_scheme_idx = waterfall_view.color_scheme_idx;
+        settings.concentric_color_scheme_idx = concentric_view.color_scheme_idx;
+        settings.ui_mode = ui_mode;
         save_settings(settings_path, settings);
 
         // Cleanup
-        audio_processor->stop();
+        audio_input->stop();
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -182,7 +198,7 @@ private:
     float center_frequency;
     // legacy zoom_config removed; using core ZoomFFTConfig on demand
     AudioConfig audio_config;
-    std::unique_ptr<AudioProcessor> audio_processor;
+    std::unique_ptr<IAudioInput> audio_input;
     int frontend_decimation = 2; // Use every 2nd sample (effective 24k from 48k)
     std::deque<float> input_ring;
     unsigned int last_actual_fs = 0;
@@ -201,6 +217,7 @@ private:
     // Display data
     std::vector<float> current_spectrum;
     gui::WaterfallView waterfall_view;
+    gui::ConcentricView concentric_view;
     
     float peak_frequency = 440.0f;
     float peak_magnitude = 0.0f;
@@ -212,12 +229,17 @@ private:
     const char* settings_path = "config/settings.json";
     bool show_icon_browser = false;
     bool mic_enabled = true;
+    bool show_spectrum = true;
     bool show_waterfall = false;
+    bool show_concentric = false;
+    bool show_spectrum_settings = false;
+    int ui_mode = 0; // 0: Desktop, 1: Kiosk Landscape, 2: Kiosk Portrait
     // Waterfall speed control: update one row every N audio frames (1 = fastest)
     int waterfall_stride = 1;
     int waterfall_counter = 0;
     
     bool show_settings_page = false;
+    gui::CommandRegistry command_registry;
 
 
     // Map normalized x in [0,1] through fisheye transform (matches TS shader behavior)
@@ -236,7 +258,7 @@ private:
     
     void process_audio(const float* input, int num_samples) {
         // Track actual sample rate and reflect front-end decimation
-        const unsigned int actual_fs = audio_processor->get_config().sample_rate;
+        const unsigned int actual_fs = audio_input->get_config().sample_rate;
         const unsigned int effective_fs = actual_fs / static_cast<unsigned int>(std::max(1, frontend_decimation));
         // sample rate for core zoom fft is set when constructing cfg_core
         last_actual_fs = actual_fs;
@@ -356,104 +378,303 @@ private:
     }
     
     void render_gui() {
+        // Main menu bar
+        if (ImGui::BeginMainMenuBar()) {
+            command_registry.draw_main_menu_bar();
+            if (ImGui::BeginMenu("Mode")) {
+                bool desktop = (ui_mode == 0);
+                if (ImGui::MenuItem("Desktop (Docking)", nullptr, desktop)) {
+                    ui_mode = 0;
+                }
+                bool kiosk_land = (ui_mode == 1);
+                if (ImGui::MenuItem("Kiosk - Landscape", nullptr, kiosk_land)) {
+                    ui_mode = 1;
+                }
+                bool kiosk_port = (ui_mode == 2);
+                if (ImGui::MenuItem("Kiosk - Portrait", nullptr, kiosk_port)) {
+                    ui_mode = 2;
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+        
+        // Desktop mode: separate windows (no docking required)
+        if (ui_mode == 0) {
+            // Views
+            if (show_spectrum) {
+                if (ImGui::Begin("Spectrum", nullptr, ImGuiWindowFlags_MenuBar)) {
+                    if (ImGui::BeginMenuBar()) {
+                        if (ImGui::BeginMenu("Settings")) {
+                            bool open = show_spectrum_settings;
+                            if (ImGui::MenuItem("Spectrum Settings", nullptr, open)) {
+                                show_spectrum_settings = !show_spectrum_settings;
+                            }
+                            ImGui::EndMenu();
+                        }
+                        ImGui::EndMenuBar();
+                    }
+                    if (!current_spectrum.empty()) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                        ImVec2 m_av = ImGui::GetContentRegionAvail();
+                        const float width = std::max(200.0f, m_av.x);
+                        const float height = std::max(120.0f, m_av.y);
+                        spectrum_view.draw(dl, canvas_pos, width, height, current_spectrum, center_frequency, peak_frequency, peak_magnitude);
+                    }
+                    if (show_spectrum_settings) {
+                        // Opaque background child for readability over spectrum
+                        ImGui::Separator();
+                        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.06f, 0.07f, 0.95f));
+                        ImGui::BeginChild("SpectrumSettingsPanel", ImVec2(0, 0), true);
+                        ImGui::TextUnformatted("Spectrum Settings");
+                        ImGui::Checkbox("Show frequency lines", &spectrum_view.show_frequency_lines);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Show peak line", &spectrum_view.show_peak_line);
+                        ImGui::SliderFloat("Fisheye (bell)", &spectrum_view.bell_curve_width, 0.0f, 2.0f, "%.2f");
+                        ImGui::Separator();
+                        ImGui::Checkbox("Target frequency line", &spectrum_view.show_target_line);
+                        ImGui::Checkbox("10 cent lines", &spectrum_view.show_10_cent_lines);
+                        ImGui::Checkbox("20 cent lines", &spectrum_view.show_20_cent_lines);
+                        ImGui::Checkbox("1 cent lines", &spectrum_view.show_1_cent_lines);
+                        ImGui::Checkbox("2 cent lines", &spectrum_view.show_2_cent_lines);
+                        ImGui::Checkbox("5 cent lines", &spectrum_view.show_5_cent_lines);
+                        ImGui::ColorEdit4("Target color", (float*)&spectrum_view.color_target, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("10-cent color", (float*)&spectrum_view.color_10_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("20-cent color", (float*)&spectrum_view.color_20_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("1-cent color", (float*)&spectrum_view.color_1_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("2-cent color", (float*)&spectrum_view.color_2_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("5-cent color", (float*)&spectrum_view.color_5_cent, ImGuiColorEditFlags_NoInputs);
+                        const auto& schemes_local = spectrum_view.schemes();
+                        int idx_local = spectrum_view.color_scheme_idx;
+                        if (ImGui::BeginCombo("Color scheme##spectrum_window", schemes_local[idx_local].name)) {
+                            for (int i = 0; i < (int)schemes_local.size(); ++i) {
+                                bool selected = (i == idx_local);
+                                if (ImGui::Selectable(schemes_local[i].name, selected)) { idx_local = i; spectrum_view.color_scheme_idx = i; }
+                                if (selected) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        ImGui::EndChild();
+                        ImGui::PopStyleColor();
+                    }
+                }
+                ImGui::End();
+            }
+            if (show_waterfall) {
+                if (ImGui::Begin("Waterfall")) {
+                    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                    ImVec2 m_av = ImGui::GetContentRegionAvail();
+                    const float width = m_av.x;
+                    const float height = m_av.y;
+                    waterfall_view.draw(draw_list, canvas_pos, width, height, spectrum_view);
+                }
+                ImGui::End();
+            }
+            if (show_concentric) {
+                if (ImGui::Begin("Concentric")) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                    ImVec2 m_av = ImGui::GetContentRegionAvail();
+                    const float width = std::max(200.0f, m_av.x);
+                    const float height = std::max(120.0f, m_av.y);
+                    concentric_view.draw(dl, canvas_pos, width, height, center_frequency, peak_frequency, peak_magnitude);
+                }
+                ImGui::End();
+            }
+            // Settings in a separate window
+            if (show_settings_page) {
+                if (ImGui::Begin("Settings")) {
+                    settings_page.render(center_frequency,
+                                         precise_fft_size,
+                                         precise_decimation,
+                                         precise_window_seconds,
+                                         frontend_decimation,
+                                         spectrum_view,
+                                         &waterfall_view,
+                                         waterfall_stride,
+                                         &concentric_view);
+                }
+                ImGui::End();
+            }
+            // Icon Browser window (optional)
+            if (show_icon_browser) {
+                ImGui::Begin("Icon Browser", &show_icon_browser);
+                ImGui::TextUnformatted("Click a glyph to copy its codepoint (U+XXXX) to the clipboard.");
+                ImGui::Separator();
+                ImGuiIO& io = ImGui::GetIO();
+                ImFont* icon_font = nullptr;
+                if (!io.Fonts->Fonts.empty()) icon_font = io.Fonts->Fonts.back();
+                if (icon_font) {
+                    int items_in_row = 10;
+                    int col = 0;
+                    for (int cp = 0xE000; cp <= 0xF8FF; ++cp) {
+                        // Encode codepoint to UTF-8 (PUA range uses 3-byte UTF-8)
+                        char utf8[5] = {};
+                        ImWchar w = (ImWchar)cp;
+                        if (w < 0x80) { utf8[0] = (char)w; utf8[1] = 0; }
+                        else if (w < 0x800) { utf8[0] = (char)(0xC0 | (w >> 6)); utf8[1] = (char)(0x80 | (w & 0x3F)); utf8[2] = 0; }
+                        else if (w < 0x10000) { utf8[0] = (char)(0xE0 | (w >> 12)); utf8[1] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[2] = (char)(0x80 | (w & 0x3F)); utf8[3] = 0; }
+                        else { utf8[0] = (char)(0xF0 | (w >> 18)); utf8[1] = (char)(0x80 | ((w >> 12) & 0x3F)); utf8[2] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[3] = (char)(0x80 | (w & 0x3F)); utf8[4] = 0; }
+                        ImGui::PushFont(icon_font);
+                        bool clicked = ImGui::Button(utf8, ImVec2(28, 28));
+                        ImGui::PopFont();
+                        ImGui::SameLine();
+                        ImGui::Text("U+%04X", cp);
+                        if (clicked) {
+                            char buf[16];
+                            snprintf(buf, sizeof(buf), "U+%04X", cp);
+                            ImGui::SetClipboardText(buf);
+                        }
+                        if (++col >= items_in_row) { col = 0; ImGui::NewLine(); }
+                    }
+                } else {
+                    ImGui::TextUnformatted("No icon font loaded.");
+                }
+                ImGui::End();
+            }
+            // Command palette
+            command_registry.render_command_palette();
+            return; // skip kiosk layout below
+        }
+
+        // Single-window UI (landscape/portrait tweaks)
         ImGui::Begin("Piano Tuner");
         
-        // Layout: top and bottom adapt to content height; center uses the rest
         ImVec2 avail = ImGui::GetContentRegionAvail();
         const float frame_h = ImGui::GetFrameHeightWithSpacing();
-        float h_top = frame_h * 2.0f;
-        float h_bot = frame_h * 1.5f;
-        float h_mid = std::max(0.0f, avail.y - h_top - h_bot);
-
-        // Top bar
-        ImGui::BeginChild("TopBar", ImVec2(0, h_top), true);
-        ImGui::Columns(4, nullptr, false);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 8));
-        if (ImGui::Button(u8"\uE587")) show_settings_page = false; // Material Icons: home
-        ImGui::NextColumn();
-        ImGui::Text("Piano Tuner");
-        ImGui::NextColumn();
-        if (ImGui::Button(u8"\uE3AC")) show_settings_page = true; // Material Icons: settings
-        ImGui::NextColumn();
-        {
-            const char* mic_icon = u8"\uE31D"; // Material Icons: microphone
+        const bool kiosk_portrait = (ui_mode == 2);
+        
+        auto draw_top_controls = [&]() {
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 8));
+            if (ImGui::Button(u8"\uE587")) show_settings_page = false; // home
+            ImGui::SameLine();
+            if (ImGui::Button(u8"\uE3AC")) show_settings_page = true;  // settings
+            ImGui::SameLine();
+            const char* mic_icon = u8"\uE31D";
             const bool mic_was_off = !mic_enabled;
             if (mic_was_off) {
                 ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(90, 40, 40, 200));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(120, 60, 60, 220));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(140, 70, 70, 255));
             }
-            if (ImGui::Button(mic_icon)) {
-                mic_enabled = !mic_enabled;
-            }
+            if (ImGui::Button(mic_icon)) { mic_enabled = !mic_enabled; }
             if (mic_was_off) ImGui::PopStyleColor(3);
             ImGui::SameLine();
-            // Waterfall toggle (Material Icons: U+E176)
-            const char* waterfall_icon = u8"\uE176";
+            // view buttons
+            const bool spectrum_active = show_spectrum && !show_waterfall && !show_concentric;
+            if (spectrum_active) {
+                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(40, 150, 90, 200));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(60, 180, 120, 220));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(70, 200, 140, 255));
+            }
+            if (ImGui::Button(u8"\uF22B")) { show_spectrum = true; show_waterfall = false; show_concentric = false; }
+            if (spectrum_active) ImGui::PopStyleColor(3);
+            ImGui::SameLine();
             const bool waterfall_was_on = show_waterfall;
             if (waterfall_was_on) {
                 ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(40, 90, 150, 200));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(60, 120, 180, 220));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(70, 140, 200, 255));
             }
-            if (ImGui::Button(waterfall_icon)) {
-                show_waterfall = !show_waterfall;
-            }
+            if (ImGui::Button(u8"\uE176")) { show_waterfall = true; }
             if (waterfall_was_on) ImGui::PopStyleColor(3);
             ImGui::SameLine();
-            if (ImGui::Button("Icons")) show_icon_browser = !show_icon_browser;
-        }
-        ImGui::Columns(1);
-        ImGui::PopStyleVar();
-        ImGui::EndChild();
-
-        // (Moved speed control into Settings page)
-
-        // Middle content
-        ImGui::BeginChild("CenterContent", ImVec2(0, h_mid), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        if (show_settings_page) {
-            settings_page.render(center_frequency,
-                                 precise_fft_size,
-                                 precise_decimation,
-                                 precise_window_seconds,
-                                 frontend_decimation,
-                                 spectrum_view,
-                                 waterfall_stride);
-        } else {
-            if (show_waterfall) {
-                // Simple waterfall using WaterfallView
-                ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-                ImVec2 m_av = ImGui::GetContentRegionAvail();
-                const float width = m_av.x;
-                const float height = m_av.y;
-                waterfall_view.draw(draw_list, canvas_pos, width, height, spectrum_view);
-                // Reserve no extra space; child has fixed height, and scrollbars are disabled
-            } else if (!current_spectrum.empty()) {
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-                ImVec2 m_av = ImGui::GetContentRegionAvail();
-                const float width = std::max(200.0f, m_av.x);
-                const float height = std::max(120.0f, m_av.y);
-                ImVec2 canvas_size(width, height);
-                spectrum_view.draw(dl, canvas_pos, width, height, current_spectrum, center_frequency, peak_frequency, peak_magnitude);
-                // Reserve no extra space; child has fixed height, and scrollbars are disabled
+            const bool concentric_was_on = show_concentric;
+            if (concentric_was_on) {
+                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(90, 40, 150, 200));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(120, 60, 180, 220));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(140, 70, 200, 255));
             }
+            if (ImGui::Button(u8"\uE55C")) { show_concentric = true; }
+            if (concentric_was_on) ImGui::PopStyleColor(3);
+            ImGui::SameLine(); if (ImGui::Button("Icons")) show_icon_browser = !show_icon_browser;
+            ImGui::PopStyleVar();
+        };
+        
+        auto draw_center_content = [&]() {
+            if (show_settings_page) {
+                settings_page.render(center_frequency,
+                                     precise_fft_size,
+                                     precise_decimation,
+                                     precise_window_seconds,
+                                     frontend_decimation,
+                                     spectrum_view,
+                                     &waterfall_view,
+                                     waterfall_stride,
+                                     &concentric_view);
+            } else {
+                if (show_concentric) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                    ImVec2 m_av = ImGui::GetContentRegionAvail();
+                    const float width = std::max(200.0f, m_av.x);
+                    const float height = std::max(120.0f, m_av.y);
+                    concentric_view.draw(dl, canvas_pos, width, height, center_frequency, peak_frequency, peak_magnitude);
+                } else if (show_waterfall) {
+                    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                    ImVec2 m_av = ImGui::GetContentRegionAvail();
+                    const float width = m_av.x;
+                    const float height = m_av.y;
+                    waterfall_view.draw(draw_list, canvas_pos, width, height, spectrum_view);
+                } else if (!current_spectrum.empty()) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                    ImVec2 m_av = ImGui::GetContentRegionAvail();
+                    const float width = std::max(200.0f, m_av.x);
+                    const float height = std::max(120.0f, m_av.y);
+                    spectrum_view.draw(dl, canvas_pos, width, height, current_spectrum, center_frequency, peak_frequency, peak_magnitude);
+                }
+            }
+        };
+        
+        if (kiosk_portrait) {
+            const float w_side = std::max(80.0f, frame_h * 3.0f);
+            // Left bar
+            ImGui::BeginChild("LeftBar", ImVec2(w_side, 0), true);
+            draw_top_controls();
+            ImGui::EndChild();
+            ImGui::SameLine();
+            // Center
+            ImGui::BeginChild("CenterContent", ImVec2(std::max(0.0f, avail.x - 2*w_side), 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            draw_center_content();
+            ImGui::EndChild();
+            ImGui::SameLine();
+            // Right bar: quick actions
+            ImGui::BeginChild("RightBar", ImVec2(w_side, 0), true);
+            if (ImGui::Button("Home")) show_settings_page = false;
+            if (ImGui::Button("Settings")) show_settings_page = true;
+            ImGui::Text("\n");
+            ImGui::Text("[Prev]");
+            ImGui::Text("[Play]");
+            ImGui::EndChild();
+        } else {
+            // Landscape: top/bottom bars
+            const float h_top = frame_h * 2.0f;
+            const float h_bot = frame_h * 1.5f;
+            float h_mid = std::max(0.0f, avail.y - h_top - h_bot);
+            ImGui::BeginChild("TopBar", ImVec2(0, h_top), true);
+            ImGui::Columns(4, nullptr, false);
+            draw_top_controls();
+            ImGui::Columns(1);
+            ImGui::EndChild();
+            ImGui::BeginChild("CenterContent", ImVec2(0, h_mid), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            draw_center_content();
+            ImGui::EndChild();
+            ImGui::BeginChild("BottomBar", ImVec2(0, h_bot), true);
+            ImGui::Columns(4, nullptr, false);
+            ImGui::Text("[Prev]");
+            ImGui::NextColumn();
+            ImGui::Text("[Play]");
+            ImGui::NextColumn();
+            if (ImGui::Button("Home")) show_settings_page = false;
+            ImGui::NextColumn();
+            if (ImGui::Button("Settings")) show_settings_page = true;
+            ImGui::Columns(1);
+            ImGui::EndChild();
         }
-        ImGui::EndChild();
-
-        // Bottom bar with 4 columns and placeholder icons
-        ImGui::BeginChild("BottomBar", ImVec2(0, h_bot), true);
-        ImGui::Columns(4, nullptr, false);
-        ImGui::Text("[Prev]");
-        ImGui::NextColumn();
-        ImGui::Text("[Play]");
-        ImGui::NextColumn();
-        if (ImGui::Button("Home")) show_settings_page = false;
-        ImGui::NextColumn();
-        if (ImGui::Button("Settings")) show_settings_page = true;
-        ImGui::Columns(1);
-        ImGui::EndChild();
         
         // Optional: Icon Browser window
         if (show_icon_browser) {
@@ -491,8 +712,94 @@ private:
             }
             ImGui::End();
         }
-
+        
         ImGui::End();
+        
+        // Command palette window
+        command_registry.render_command_palette();
+    }
+    
+    void build_commands() {
+        using gui::Command;
+        // View: Spectrum
+        command_registry.register_command(Command{
+            "view.spectrum",
+            "Show Spectrum View",
+            "Ctrl+1",
+            "View",
+            [this]{ return true; },
+            [this]{ show_settings_page = false; show_spectrum = true; show_waterfall = false; show_concentric = false; }
+        });
+        // View: Waterfall
+        command_registry.register_command(Command{
+            "view.waterfall",
+            "Show Waterfall View",
+            "Ctrl+2",
+            "View",
+            [this]{ return true; },
+            [this]{ show_settings_page = false; show_waterfall = true; }
+        });
+        // View: Concentric
+        command_registry.register_command(Command{
+            "view.concentric",
+            "Show Concentric View",
+            "Ctrl+3",
+            "View",
+            [this]{ return true; },
+            [this]{ show_settings_page = false; show_concentric = true; }
+        });
+        // View: Toggle variants (multi-view)
+        command_registry.register_command(Command{
+            "view.toggle_spectrum",
+            "Toggle Spectrum View",
+            "Ctrl+Shift+1",
+            "View",
+            [this]{ return true; },
+            [this]{ show_spectrum = !show_spectrum; }
+        });
+        command_registry.register_command(Command{
+            "view.toggle_waterfall",
+            "Toggle Waterfall View",
+            "Ctrl+Shift+2",
+            "View",
+            [this]{ return true; },
+            [this]{ show_waterfall = !show_waterfall; }
+        });
+        command_registry.register_command(Command{
+            "view.toggle_concentric",
+            "Toggle Concentric View",
+            "Ctrl+Shift+3",
+            "View",
+            [this]{ return true; },
+            [this]{ show_concentric = !show_concentric; }
+        });
+        // View: Settings
+        command_registry.register_command(Command{
+            "view.settings",
+            "Open Settings",
+            "",
+            "View",
+            [this]{ return true; },
+            [this]{ show_settings_page = true; }
+        });
+        // Audio: Toggle Microphone (placeholder)
+        command_registry.register_command(Command{
+            "audio.toggle_mic",
+            "Toggle Microphone",
+            "",
+            "Audio",
+            [this]{ return true; },
+            [this]{ mic_enabled = !mic_enabled; }
+        });
+        // Help: Command Palette
+        command_registry.register_command(Command{
+            "help.palette",
+            "Command Palette...",
+            "Ctrl+P",
+            "Help",
+            [this]{ return true; },
+            [this]{ command_registry.open_palette(); }
+        });
     }
 };
 

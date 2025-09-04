@@ -1,5 +1,5 @@
 #include "zoom_fft.hpp"
-#include "audio_processor.hpp"
+#include "audio_input.hpp"
 #include <iostream>
 #include <iomanip>
 #include <atomic>
@@ -56,9 +56,9 @@ int main(int argc, char* argv[]) {
     std::atomic<float> peak_magnitude(0.0f);
     std::atomic<int> valid_detections(0);
     
-    AudioProcessor audio(audio_config);
+    auto audio = createAudioInput(audio_config);
     
-    audio.set_process_callback([&](const float* input, int num_samples) {
+    audio->set_process_callback([&](const float* input, int num_samples) {
         if (!g_running.load()) return;
         
         auto magnitudes = zoom_fft.process(input, num_samples, target_frequency);
@@ -81,7 +81,7 @@ int main(int argc, char* argv[]) {
         valid_detections.fetch_add(1);
     });
     
-    if (!audio.start()) {
+    if (!audio->start()) {
         std::cerr << "Failed to start audio\n";
         return 1;
     }
@@ -113,9 +113,9 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    audio.stop();
+    audio->stop();
     
-    auto stats = audio.get_latency_stats();
+    auto stats = audio->get_latency_stats();
     std::cout << "\nStats: avg=" << stats.avg_ms << "ms, xruns=" << stats.xruns << std::endl;
     
     return 0;

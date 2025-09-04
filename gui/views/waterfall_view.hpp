@@ -16,6 +16,7 @@ public:
     // Fixed pixel height per waterfall row (prevents resize stretching)
     float row_px = 12.0f;
     bool use_texture = true; // default to texture path for full-height fill
+    int color_scheme_idx = 2; // independent color scheme selection
 
     WaterfallView();
 

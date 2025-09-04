@@ -1,7 +1,9 @@
 #pragma once
 
 #include <imgui.h>
-#include "spectrum_view.hpp"
+#include "views/spectrum_view.hpp"
+#include "views/concentric_view.hpp"
+#include "views/waterfall_view.hpp"
 
 namespace gui {
 
@@ -14,7 +16,9 @@ public:
                 float& precise_window_seconds,
                 int& frontend_decimation,
                 SpectrumView& spectrum_view,
-                int& waterfall_stride);
+                WaterfallView* waterfall_view,
+                int& waterfall_stride,
+                ConcentricView* concentric_view = nullptr);
 };
 
 } // namespace gui
