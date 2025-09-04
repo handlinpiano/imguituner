@@ -243,15 +243,20 @@ void MultiRegionProcessor::setup_for_note(float fundamental_hz) {
 }
 
 int MultiRegionProcessor::select_decimation(float frequency_hz) const {
-    // Higher frequencies can use more decimation
-    // This maintains constant cents resolution
-    if (frequency_hz < 500.0f) {
-        return 16;
-    } else if (frequency_hz < 2000.0f) {
-        return 32;
-    } else {
-        return 64;
-    }
+    // Cap analysis band to <= 5000 Hz per requirements
+    const float f_center = std::min(frequency_hz, 5000.0f);
+    // Zoom FFT inspects a ±120 cents window around the center.
+    // Max baseband offset = (2^(120/1200) - 1) * f_center ≈ 0.07177 * f_center
+    // So required baseband Nyquist >= 0.07177 * f_center → Fs_decimated >= 0.14354 * f_center
+    // Therefore: decimation <= Fs / (0.14354 * f_center)
+    const float cents_span_ratio = std::pow(2.0f, 120.0f / 1200.0f) - 1.0f; // ≈ 0.07177
+    const float required_fs_decimated = 2.0f * cents_span_ratio * std::max(1.0f, f_center); // ≈ 0.14354 * f
+    const float max_dec_by_bandwidth = static_cast<float>(base_config.sample_rate) / std::max(1.0f, required_fs_decimated);
+
+    int d = static_cast<int>(std::floor(max_dec_by_bandwidth + 1e-6f));
+    if (d < 1) d = 1;
+    if (d > 32) d = 32; // validated filter cap
+    return d;
 }
 
 std::vector<MultiRegionProcessor::RegionResult> 

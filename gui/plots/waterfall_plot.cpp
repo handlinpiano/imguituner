@@ -1,11 +1,27 @@
  
- #include "waterfall_view.hpp"
+ #include "waterfall_plot.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <GLES3/gl3.h>
 
 namespace gui {
+static inline ImU32 color_from_vec4(const ImVec4& c) {
+    return IM_COL32((int)(c.x*255),(int)(c.y*255),(int)(c.z*255),(int)(c.w*255));
+}
+
+float WaterfallView::fisheye_transform(float x01, float distortion) {
+    float normalizedX = (x01 - 0.5f) * 2.0f;
+    float absx = std::fabs(normalizedX);
+    float transformed;
+    if (distortion > 0.0f) {
+        transformed = (normalizedX >= 0.0f ? absx : -absx) / (1.0f + absx * distortion);
+        transformed = transformed * (1.0f + distortion);
+    } else {
+        transformed = normalizedX;
+    }
+    return transformed * 0.5f + 0.5f;
+}
 
 WaterfallView::WaterfallView() {
     // Initialize with empty history
@@ -125,6 +141,57 @@ void WaterfallView::draw(ImDrawList* dl,
         // Draw image to fill the canvas
         ImTextureID tid = (ImTextureID)(intptr_t)texture_id_;
         dl->AddImage(tid, p0, p1, ImVec2(0, 0), ImVec2(1, 1));
+        // Overlay grid/lines similar to Spectrum
+        // Map cents to x using SpectrumView bell/fisheye and draw vertical lines
+        auto x_for_cents = [&](float cents){
+            float norm = (cents + 120.0f) / 240.0f;
+            float xf = fisheye_transform(norm, spectrum_view.bell_curve_width);
+            return canvas_pos.x + xf * width;
+        };
+        // 10/20-cent lines
+        if (current_cols_ > 0) {
+            if (show_10_cent_lines) {
+                const ImU32 col10 = IM_COL32((int)(color_10_cent.x*255),(int)(color_10_cent.y*255),(int)(color_10_cent.z*255),(int)(color_10_cent.w*255));
+                for (int c = -120; c <= 120; c += 10) {
+                    if (c == 0) continue;
+                    float x = x_for_cents((float)c);
+                    dl->AddLine(ImVec2(x, p0.y), ImVec2(x, p1.y), col10, 1.0f);
+                }
+            }
+            if (show_20_cent_lines) {
+                const ImU32 col20 = IM_COL32((int)(color_20_cent.x*255),(int)(color_20_cent.y*255),(int)(color_20_cent.z*255),(int)(color_20_cent.w*255));
+                for (int c = -120; c <= 120; c += 20) {
+                    if (c == 0) continue;
+                    float x = x_for_cents((float)c);
+                    dl->AddLine(ImVec2(x, p0.y), ImVec2(x, p1.y), col20, 1.2f);
+                }
+            }
+            // Target center highlight
+            if (show_target_line) {
+                float x_center = x_for_cents(0.0f);
+                ImU32 colTarget = IM_COL32((int)(color_target.x*255),(int)(color_target.y*255),(int)(color_target.z*255),(int)(color_target.w*255));
+                dl->AddLine(ImVec2(x_center, p0.y), ImVec2(x_center, p1.y), colTarget, 2.0f);
+            }
+            // Optional fine lines at ±1/2/5 if Spectrum has them enabled
+            if (show_1_cent_lines) {
+                float x1 = x_for_cents(1.0f); float x_1 = x_for_cents(-1.0f);
+                ImU32 c1 = IM_COL32((int)(color_1_cent.x*255),(int)(color_1_cent.y*255),(int)(color_1_cent.z*255),(int)(color_1_cent.w*255));
+                dl->AddLine(ImVec2(x1, p0.y), ImVec2(x1, p1.y), c1, 1.0f);
+                dl->AddLine(ImVec2(x_1, p0.y), ImVec2(x_1, p1.y), c1, 1.0f);
+            }
+            if (show_2_cent_lines) {
+                float x2 = x_for_cents(2.0f); float x_2 = x_for_cents(-2.0f);
+                ImU32 c2 = IM_COL32((int)(color_2_cent.x*255),(int)(color_2_cent.y*255),(int)(color_2_cent.z*255),(int)(color_2_cent.w*255));
+                dl->AddLine(ImVec2(x2, p0.y), ImVec2(x2, p1.y), c2, 1.1f);
+                dl->AddLine(ImVec2(x_2, p0.y), ImVec2(x_2, p1.y), c2, 1.1f);
+            }
+            if (show_5_cent_lines) {
+                float x5 = x_for_cents(5.0f); float x_5 = x_for_cents(-5.0f);
+                ImU32 c5 = IM_COL32((int)(color_5_cent.x*255),(int)(color_5_cent.y*255),(int)(color_5_cent.z*255),(int)(color_5_cent.w*255));
+                dl->AddLine(ImVec2(x5, p0.y), ImVec2(x5, p1.y), c5, 1.2f);
+                dl->AddLine(ImVec2(x_5, p0.y), ImVec2(x_5, p1.y), c5, 1.2f);
+            }
+        }
     } else if (current_cols_ > 0) {
         // CPU fallback: draw rects like before (stable and GL-safe)
         float row_height = std::max(1.0f, row_px);
@@ -182,6 +249,18 @@ void WaterfallView::draw(ImDrawList* dl,
                 dl->AddRectFilled(ImVec2(x0, y0), ImVec2(clamped_x1, y1), col);
             }
         }
+        // Overlay lines for CPU path as well
+        auto x_for_cents = [&](float cents){
+            float norm = (cents + 120.0f) / 240.0f;
+            float xf = fisheye_transform(norm, spectrum_view.bell_curve_width);
+            return canvas_pos.x + xf * width;
+        };
+        if (show_10_cent_lines) { const ImU32 col10 = IM_COL32((int)(color_10_cent.x*255),(int)(color_10_cent.y*255),(int)(color_10_cent.z*255),(int)(color_10_cent.w*255)); for (int c = -120; c <= 120; c += 10) { if (c == 0) continue; float x = x_for_cents((float)c); dl->AddLine(ImVec2(x, p0.y), ImVec2(x, p1.y), col10, 1.0f); } }
+        if (show_20_cent_lines) { const ImU32 col20 = IM_COL32((int)(color_20_cent.x*255),(int)(color_20_cent.y*255),(int)(color_20_cent.z*255),(int)(color_20_cent.w*255)); for (int c = -120; c <= 120; c += 20) { if (c == 0) continue; float x = x_for_cents((float)c); dl->AddLine(ImVec2(x, p0.y), ImVec2(x, p1.y), col20, 1.2f); } }
+        if (show_target_line) { float x_center = x_for_cents(0.0f); dl->AddLine(ImVec2(x_center, p0.y), ImVec2(x_center, p1.y), IM_COL32((int)(color_target.x*255),(int)(color_target.y*255),(int)(color_target.z*255),(int)(color_target.w*255)), 2.0f); }
+        if (show_1_cent_lines) { float x1=x_for_cents(1.0f), x_1=x_for_cents(-1.0f); ImU32 c1=IM_COL32((int)(color_1_cent.x*255),(int)(color_1_cent.y*255),(int)(color_1_cent.z*255),(int)(color_1_cent.w*255)); dl->AddLine(ImVec2(x1,p0.y),ImVec2(x1,p1.y),c1,1.0f); dl->AddLine(ImVec2(x_1,p0.y),ImVec2(x_1,p1.y),c1,1.0f);} 
+        if (show_2_cent_lines) { float x2=x_for_cents(2.0f), x_2=x_for_cents(-2.0f); ImU32 c2=IM_COL32((int)(color_2_cent.x*255),(int)(color_2_cent.y*255),(int)(color_2_cent.z*255),(int)(color_2_cent.w*255)); dl->AddLine(ImVec2(x2,p0.y),ImVec2(x2,p1.y),c2,1.1f); dl->AddLine(ImVec2(x_2,p0.y),ImVec2(x_2,p1.y),c2,1.1f);} 
+        if (show_5_cent_lines) { float x5=x_for_cents(5.0f), x_5=x_for_cents(-5.0f); ImU32 c5=IM_COL32((int)(color_5_cent.x*255),(int)(color_5_cent.y*255),(int)(color_5_cent.z*255),(int)(color_5_cent.w*255)); dl->AddLine(ImVec2(x5,p0.y),ImVec2(x5,p1.y),c5,1.2f); dl->AddLine(ImVec2(x_5,p0.y),ImVec2(x_5,p1.y),c5,1.2f);} 
     }
 
     ImGui::PopClipRect();

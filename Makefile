@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic -DNDEBUG
-INCLUDES = -I./include -I./include/tuner -I./gui -I./gui/views
+INCLUDES = -I./include -I./include/tuner -I./gui -I./gui/plots
 LIBS = -lasound -lpthread -lm
 
 # ImGui vendored location
@@ -56,10 +56,10 @@ ICON_BROWSER_OBJS = gui/icon_browser.o $(IMGUI_OBJS)
 # Object files for GUI
 IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
 TUNER_GUI_OBJS = gui/main_window.o \
-                 gui/views/spectrum_view.o \
-                 gui/views/waterfall_view.o \
-                 gui/views/concentric_view.o \
-                 gui/views/settings_page.o \
+                 gui/plots/spectrum_plot.o \
+                 gui/plots/waterfall_plot.o \
+                 gui/plots/concentric_plot.o \
+                 gui/plots/settings_page.o \
                  platform/alsa/audio_input_alsa.o \
                  core/app_settings_io.o \
                  core/zoom_fft.o \
@@ -114,13 +114,16 @@ gui/main_window.o: gui/main_window.cpp
 gui/icon_browser.o: gui/icon_browser.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/views/spectrum_view.o: gui/views/spectrum_view.cpp gui/views/spectrum_view.hpp
+gui/plots/spectrum_plot.o: gui/plots/spectrum_plot.cpp gui/plots/spectrum_plot.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/views/waterfall_view.o: gui/views/waterfall_view.cpp gui/views/waterfall_view.hpp gui/views/spectrum_view.hpp
+gui/plots/waterfall_plot.o: gui/plots/waterfall_plot.cpp gui/plots/waterfall_plot.hpp gui/plots/spectrum_plot.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
-gui/views/settings_page.o: gui/views/settings_page.cpp gui/settings_page.hpp gui/views/spectrum_view.hpp
+gui/plots/settings_page.o: gui/plots/settings_page.cpp gui/settings_page.hpp gui/plots/spectrum_plot.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/plots/concentric_plot.o: gui/plots/concentric_plot.cpp gui/plots/concentric_plot.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 gui/views/concentric_view.o: gui/views/concentric_view.cpp gui/views/concentric_view.hpp

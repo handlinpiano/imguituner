@@ -1,9 +1,9 @@
 #pragma once
 
 #include <imgui.h>
-#include "views/spectrum_view.hpp"
-#include "views/concentric_view.hpp"
-#include "views/waterfall_view.hpp"
+#include "plots/spectrum_plot.hpp"
+#include "plots/concentric_plot.hpp"
+#include "plots/waterfall_plot.hpp"
 
 namespace gui {
 

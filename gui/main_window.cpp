@@ -9,14 +9,14 @@
 #include <memory>
 #include <unordered_map>
 #include <tuple>
-#include "views/spectrum_view.hpp"
-#include "views/waterfall_view.hpp"
+#include "plots/spectrum_plot.hpp"
+#include "plots/waterfall_plot.hpp"
 #include "settings_page.hpp"
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
 #include "zoom_fft.hpp"
 #include "fft/fft_utils.hpp"
-#include "views/concentric_view.hpp"
+#include "plots/concentric_plot.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -118,7 +118,7 @@ public:
         precise_fft_size = settings.precise_fft_size;
         precise_decimation = settings.precise_decimation;
         precise_window_seconds = settings.precise_window_seconds;
-        frontend_decimation = settings.frontend_decimation;
+        // frontend_decimation removed (fixed at 1)
         spectrum_view.show_frequency_lines = settings.show_frequency_lines;
         spectrum_view.show_peak_line = settings.show_peak_line;
         spectrum_view.bell_curve_width = settings.bell_curve_width;
@@ -174,7 +174,7 @@ public:
         settings.precise_fft_size = precise_fft_size;
         settings.precise_decimation = precise_decimation;
         settings.precise_window_seconds = precise_window_seconds;
-        settings.frontend_decimation = frontend_decimation;
+        // frontend_decimation removed (fixed at 1)
         settings.show_frequency_lines = spectrum_view.show_frequency_lines;
         settings.show_peak_line = spectrum_view.show_peak_line;
         settings.bell_curve_width = spectrum_view.bell_curve_width;
@@ -199,7 +199,7 @@ private:
     // legacy zoom_config removed; using core ZoomFFTConfig on demand
     AudioConfig audio_config;
     std::unique_ptr<IAudioInput> audio_input;
-    int frontend_decimation = 2; // Use every 2nd sample (effective 24k from 48k)
+    int frontend_decimation = 1; // fixed at no decimation
     std::deque<float> input_ring;
     unsigned int last_actual_fs = 0;
     unsigned int last_effective_fs = 0;
@@ -233,6 +233,8 @@ private:
     bool show_waterfall = false;
     bool show_concentric = false;
     bool show_spectrum_settings = false;
+    bool show_waterfall_settings = false;
+    bool show_concentric_settings = false;
     int ui_mode = 0; // 0: Desktop, 1: Kiosk Landscape, 2: Kiosk Portrait
     // Waterfall speed control: update one row every N audio frames (1 = fastest)
     int waterfall_stride = 1;
@@ -259,14 +261,14 @@ private:
     void process_audio(const float* input, int num_samples) {
         // Track actual sample rate and reflect front-end decimation
         const unsigned int actual_fs = audio_input->get_config().sample_rate;
-        const unsigned int effective_fs = actual_fs / static_cast<unsigned int>(std::max(1, frontend_decimation));
+        const unsigned int effective_fs = actual_fs; // no frontend decimation
         // sample rate for core zoom fft is set when constructing cfg_core
         last_actual_fs = actual_fs;
         last_effective_fs = effective_fs;
 
         // Append front-end decimated samples to ring buffer
         if (input && num_samples > 0) {
-            for (int i = 0; i < num_samples; i += std::max(1, frontend_decimation)) {
+            for (int i = 0; i < num_samples; ++i) {
                 input_ring.push_back(input[i]);
             }
         }
@@ -445,6 +447,10 @@ private:
                         ImGui::ColorEdit4("1-cent color", (float*)&spectrum_view.color_1_cent, ImGuiColorEditFlags_NoInputs);
                         ImGui::ColorEdit4("2-cent color", (float*)&spectrum_view.color_2_cent, ImGuiColorEditFlags_NoInputs);
                         ImGui::ColorEdit4("5-cent color", (float*)&spectrum_view.color_5_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::Separator();
+                        ImGui::Checkbox("Show X-axis cent labels", &spectrum_view.show_cent_labels);
+                        ImGui::SliderInt("Label size", &spectrum_view.cent_label_size, 0, 3);
+                        ImGui::ColorEdit4("Label color", (float*)&spectrum_view.color_cent_labels, ImGuiColorEditFlags_NoInputs);
                         const auto& schemes_local = spectrum_view.schemes();
                         int idx_local = spectrum_view.color_scheme_idx;
                         if (ImGui::BeginCombo("Color scheme##spectrum_window", schemes_local[idx_local].name)) {
@@ -462,24 +468,109 @@ private:
                 ImGui::End();
             }
             if (show_waterfall) {
-                if (ImGui::Begin("Waterfall")) {
+                if (ImGui::Begin("Waterfall", nullptr, ImGuiWindowFlags_MenuBar)) {
+                    if (ImGui::BeginMenuBar()) {
+                        if (ImGui::BeginMenu("Settings")) {
+                            bool open = show_waterfall_settings;
+                            if (ImGui::MenuItem("Waterfall Settings", nullptr, open)) {
+                                show_waterfall_settings = !show_waterfall_settings;
+                            }
+                            ImGui::EndMenu();
+                        }
+                        ImGui::EndMenuBar();
+                    }
                     ImDrawList* draw_list = ImGui::GetWindowDrawList();
                     ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
                     ImVec2 m_av = ImGui::GetContentRegionAvail();
                     const float width = m_av.x;
                     const float height = m_av.y;
                     waterfall_view.draw(draw_list, canvas_pos, width, height, spectrum_view);
+                    if (show_waterfall_settings) {
+                        ImGui::Separator();
+                        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.06f, 0.07f, 0.95f));
+                        ImGui::BeginChild("WaterfallSettingsPanel", ImVec2(0, 0), true);
+                        ImGui::TextUnformatted("Waterfall Settings");
+                        // Color scheme dropdown using Spectrum palettes
+                        const auto& schemes_wf = spectrum_view.schemes();
+                        int widx_local = waterfall_view.color_scheme_idx;
+                        const char* preview = schemes_wf[std::max(0, std::min((int)schemes_wf.size()-1, widx_local))].name;
+                        if (ImGui::BeginCombo("Color scheme##waterfall_window", preview)) {
+                            for (int i = 0; i < (int)schemes_wf.size(); ++i) {
+                                bool selected = (i == widx_local);
+                                if (ImGui::Selectable(schemes_wf[i].name, selected)) { widx_local = i; waterfall_view.color_scheme_idx = i; }
+                                if (selected) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        // Independent line overlays
+                        ImGui::Separator();
+                        ImGui::Checkbox("Target frequency line", &waterfall_view.show_target_line);
+                        ImGui::Checkbox("10 cent lines", &waterfall_view.show_10_cent_lines);
+                        ImGui::Checkbox("20 cent lines", &waterfall_view.show_20_cent_lines);
+                        ImGui::Checkbox("1 cent lines", &waterfall_view.show_1_cent_lines);
+                        ImGui::Checkbox("2 cent lines", &waterfall_view.show_2_cent_lines);
+                        ImGui::Checkbox("5 cent lines", &waterfall_view.show_5_cent_lines);
+                        ImGui::ColorEdit4("Target color", (float*)&waterfall_view.color_target, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("10-cent color", (float*)&waterfall_view.color_10_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("20-cent color", (float*)&waterfall_view.color_20_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("1-cent color", (float*)&waterfall_view.color_1_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("2-cent color", (float*)&waterfall_view.color_2_cent, ImGuiColorEditFlags_NoInputs);
+                        ImGui::ColorEdit4("5-cent color", (float*)&waterfall_view.color_5_cent, ImGuiColorEditFlags_NoInputs);
+                        // Speed (stride)
+                        ImGui::SliderInt("Waterfall Stride (1=fast)", &waterfall_stride, 1, 20);
+                        ImGui::SameLine();
+                        ImGui::Text("x%.1f", 1.0f / (float)std::max(1, waterfall_stride));
+                        ImGui::EndChild();
+                        ImGui::PopStyleColor();
+                    }
                 }
                 ImGui::End();
             }
             if (show_concentric) {
-                if (ImGui::Begin("Concentric")) {
+                if (ImGui::Begin("Concentric", nullptr, ImGuiWindowFlags_MenuBar)) {
+                    if (ImGui::BeginMenuBar()) {
+                        if (ImGui::BeginMenu("Settings")) {
+                            bool open = show_concentric_settings;
+                            if (ImGui::MenuItem("Concentric Settings", nullptr, open)) {
+                                show_concentric_settings = !show_concentric_settings;
+                            }
+                            ImGui::EndMenu();
+                        }
+                        ImGui::EndMenuBar();
+                    }
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
                     ImVec2 m_av = ImGui::GetContentRegionAvail();
                     const float width = std::max(200.0f, m_av.x);
                     const float height = std::max(120.0f, m_av.y);
                     concentric_view.draw(dl, canvas_pos, width, height, center_frequency, peak_frequency, peak_magnitude);
+                    if (show_concentric_settings) {
+                        ImGui::Separator();
+                        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.06f, 0.07f, 0.95f));
+                        ImGui::BeginChild("ConcentricSettingsPanel", ImVec2(0, 0), true);
+                        ImGui::TextUnformatted("Concentric Settings");
+                        ImGui::Checkbox("Lock-in enabled", &concentric_view.lock_in_enabled);
+                        ImGui::SliderFloat("Fisheye (bell)", &concentric_view.fisheye_distortion, 0.0f, 2.0f, "%.2f");
+                        auto& circles = concentric_view.circles();
+                        for (size_t i = 0; i < circles.size(); ++i) {
+                            char label[32]; snprintf(label, sizeof(label), "Circle %zu", i + 1);
+                            if (ImGui::TreeNode(label)) {
+                                ImGui::SliderFloat("Movement range (±cents)", &circles[i].movement_range_cents, 1.0f, 120.0f, "%.0f");
+                                float min_tol = (i + 1 == circles.size()) ? 0.25f : 1.0f;
+                                const char* fmt_tol = (i + 1 == circles.size()) ? "%.2f" : "%.0f";
+                                ImGui::SliderFloat("Locking tolerance (±cents)", &circles[i].locking_tolerance_cents, min_tol, 50.0f, fmt_tol);
+                                ImGui::SliderFloat("Radius (px)", &circles[i].radius_px, 6.0f, 80.0f, "%.0f");
+                                // Color picker
+                                ImVec4 col = ImGui::ColorConvertU32ToFloat4(circles[i].color);
+                                if (ImGui::ColorEdit4("Color", (float*)&col, ImGuiColorEditFlags_NoInputs)) {
+                                    circles[i].color = ImGui::ColorConvertFloat4ToU32(col);
+                                }
+                                ImGui::TreePop();
+                            }
+                        }
+                        ImGui::EndChild();
+                        ImGui::PopStyleColor();
+                    }
                 }
                 ImGui::End();
             }

@@ -1,5 +1,6 @@
-#include "spectrum_view.hpp"
+#include "spectrum_plot.hpp"
 #include <cmath>
+#include <cstdio>
 
 namespace gui {
 
@@ -128,6 +129,39 @@ void SpectrumView::draw(ImDrawList* dl,
         if (show_1_cent_lines) draw_pair(1, color_1_cent, 1.0f);
         if (show_2_cent_lines) draw_pair(2, color_2_cent, 1.2f);
         if (show_5_cent_lines) draw_pair(5, color_5_cent, 1.4f);
+
+        // Cent labels every 10c, plus +/-1c if enabled
+        if (show_cent_labels) {
+            ImU32 colLbl = IM_COL32((int)(color_cent_labels.x*255),(int)(color_cent_labels.y*255),(int)(color_cent_labels.z*255),(int)(color_cent_labels.w*255));
+            float base_y = canvas_pos.y + height;
+            auto size_for_index = [&](int idx){
+                switch (idx) {
+                    case 0: return 0.75f; // tiny
+                    case 1: return 0.90f; // small
+                    case 2: return 1.00f; // medium
+                    case 3: return 1.25f; // large
+                    default: return 1.00f;
+                }
+            };
+            ImFont* font = ImGui::GetFont();
+            float size_mul = size_for_index(cent_label_size);
+            float font_px = ImGui::GetFontSize() * size_mul;
+            auto draw_label = [&](int c){
+                float x = x_for_cents((float)c);
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%+dc", c);
+                ImVec2 ts = font->CalcTextSizeA(font_px, FLT_MAX, 0.0f, buf);
+                // small tick
+                dl->AddLine(ImVec2(x, base_y), ImVec2(x, base_y - 6), colLbl, 1.0f);
+                // text centered
+                dl->AddText(font, font_px, ImVec2(x - ts.x * 0.5f, base_y - ts.y - 8), colLbl, buf);
+            };
+            for (int c = -120; c <= 120; c += 10) {
+                if (c == 0) continue;
+                draw_label(c);
+            }
+            if (show_1_cent_lines) { draw_label(-1); draw_label(1); }
+        }
     }
 
     if (show_peak_line && peak_magnitude > 0.0f) {

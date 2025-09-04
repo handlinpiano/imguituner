@@ -1,4 +1,4 @@
-#include "concentric_view.hpp"
+#include "concentric_plot.hpp"
 #include <cmath>
 #include <cstdio>
 
@@ -51,6 +51,8 @@ void ConcentricView::draw(ImDrawList* dl,
     float peak_cents = 0.0f;
     if (peak_frequency_hz > 0.0f) {
         peak_cents = 1200.0f * std::log2(peak_frequency_hz / center_frequency_hz);
+        if (peak_cents < -120.0f) peak_cents = -120.0f;
+        if (peak_cents > 120.0f) peak_cents = 120.0f;
     }
 
     // Draw each circle indicator
@@ -65,7 +67,10 @@ void ConcentricView::draw(ImDrawList* dl,
         if (is_locked) {
             x_norm = 0.5f;
         } else {
-            float t = (peak_cents + cfg.movement_range_cents) / (2.0f * cfg.movement_range_cents);
+            float movement_range = cfg.movement_range_cents;
+            if (movement_range < 1.0f) movement_range = 1.0f;
+            if (movement_range > 120.0f) movement_range = 120.0f;
+            float t = (peak_cents + movement_range) / (2.0f * movement_range);
             x_norm = clamp01(t);
         }
         float xf = fisheye_transform(x_norm, fisheye_distortion);

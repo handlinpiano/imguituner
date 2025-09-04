@@ -30,6 +30,11 @@ public:
     ImVec4 color_2_cent = ImVec4(0.20f, 0.90f, 0.20f, 0.85f);
     ImVec4 color_5_cent = ImVec4(0.90f, 0.70f, 0.20f, 0.85f);
 
+    // Cent labels
+    bool show_cent_labels = true;
+    ImVec4 color_cent_labels = ImVec4(1.0f, 1.0f, 1.0f, 0.95f);
+    int cent_label_size = 2; // 0:tiny,1:small,2:medium,3:large
+
     SpectrumView();
 
     // Draw spectrum bars + overlays within the given canvas
