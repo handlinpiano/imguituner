@@ -1,5 +1,6 @@
 #include "pages/new_session_setup.hpp"
 #include "tuner/session_settings.hpp"
+#include "temperaments/loader.hpp"
 #include <imgui.h>
 #include <cmath>
 #include <ctime>
@@ -21,14 +22,21 @@ void render_new_session_setup(tuner::SessionSettings& draft, const NewSessionCal
         // No session name input; the file will be auto-named when creating the session.
 
         // Temperament
-        const char* temp_items[] = { "Equal Temperament" };
+        // Load from temperaments directory if present
+        std::vector<std::string> temps;
+        {
+            using gui::temperaments::list_temperaments;
+            temps = list_temperaments("temperaments");
+        }
         int temp_idx = 0;
-        if (ImGui::BeginCombo("Temperament", temp_items[temp_idx])) {
-            bool selected = true; // only one for now
-            if (ImGui::Selectable(temp_items[0], selected)) {
-                draft.temperament = temp_items[0];
+        for (int i = 0; i < (int)temps.size(); ++i) { if (temps[i] == draft.temperament) { temp_idx = i; break; } }
+        const char* preview = temps.empty() ? "Equal Temperament" : temps[std::max(0, std::min((int)temps.size()-1, temp_idx))].c_str();
+        if (ImGui::BeginCombo("Temperament", preview)) {
+            for (int i = 0; i < (int)temps.size(); ++i) {
+                bool selected = (i == temp_idx);
+                if (ImGui::Selectable(temps[i].c_str(), selected)) { temp_idx = i; draft.temperament = temps[i]; }
+                if (selected) ImGui::SetItemDefaultFocus();
             }
-            if (selected) ImGui::SetItemDefaultFocus();
             ImGui::EndCombo();
         }
 

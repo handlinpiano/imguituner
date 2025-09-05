@@ -1,0 +1,10 @@
+{
+  "name": "Bach-Lehman (1722)",
+  "alias": "bach-lehman-1722",
+  "description": "Based on the WTC title page as published by Dr. Bradley Lehman. Suitable for all music; no jarring fifths and a smooth arc of major thirds. The Bb–F fifth is slightly wide, but beats at the same speed as the others.",
+  "deviation_from_et_cents": true,
+  "note_order": "C",
+  "row_labels": ["et_cents_variation"],
+  "row_units": ["cents"],
+  "rows": [[5.9, 3.9, 2.0, 3.9, -2.0, 7.8, 2.0, 3.9, 3.9, 0.0, 3.9, 0.0]]
+}

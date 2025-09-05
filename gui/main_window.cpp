@@ -26,6 +26,8 @@
 #include "plots/concentric_plot.hpp"
 #include "analysis/long_analysis_engine.hpp"
 #include "plots/long_analysis_plot.hpp"
+#include "analysis/inharmonicity_window.hpp"
+#include "pages/notes_controller.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -167,7 +169,10 @@ public:
             // Global shortcuts
             command_registry.handle_shortcuts(false);
             
-            // Render GUI
+            // Sync Notes state with current session then render GUI
+            notes_state.update_from_session(current_session);
+            
+            
             render_gui();
             
             // Rendering
@@ -242,14 +247,19 @@ private:
     
     float peak_frequency = 440.0f;
     float peak_magnitude = 0.0f;
+    float last_mag0 = 0.0f, last_mag2 = 0.0f;
+    float last_snr0_linear = 0.0f, last_snr2_linear = 0.0f;
     int frames_processed = 0;
     float last_rms = 0.0f;
     std::atomic<int> last_callback_frames{0};
     gui::SpectrumView spectrum_view; // owns its own options
     gui::SettingsPage settings_page;
+    gui::NotesState notes_state;
+    gui::NotesController notes_controller;
     tuner::AppSettings settings;
     const char* settings_path = "config/settings.json";
     bool show_icon_browser = false;
+    bool show_notes_controller = false;
     bool mic_enabled = true;
     bool show_mic_setup = false;
     bool show_spectrum = true;
@@ -260,6 +270,7 @@ private:
     bool show_waterfall_settings = false;
     bool show_concentric_settings = false;
     bool show_long_settings = false;
+    bool show_inharmonicity = false;
     int ui_mode = 0; // 0: Desktop, 1: Kiosk Landscape, 2: Kiosk Portrait
     // Waterfall speed control: update one row every N audio frames (1 = fastest)
     int waterfall_stride = 1;
@@ -352,12 +363,16 @@ private:
         cfg_core.sample_rate = static_cast<int>(last_effective_fs);
         cfg_core.use_hann = true;
         static std::unique_ptr<tuner::ZoomFFT> zoomfft;
+        static std::unique_ptr<tuner::ZoomFFT> zoomfft_f0; // around ~220 Hz when needed
         static int last_fft_size_used = 0, last_decim_used = 0, last_sr_used = 0;
         if (!zoomfft || last_fft_size_used != cfg_core.fft_size || last_decim_used != cfg_core.decimation || last_sr_used != cfg_core.sample_rate) {
             zoomfft = std::make_unique<tuner::ZoomFFT>(cfg_core);
             last_fft_size_used = cfg_core.fft_size;
             last_decim_used = cfg_core.decimation;
             last_sr_used = cfg_core.sample_rate;
+        }
+        if (!zoomfft_f0 || last_fft_size_used != cfg_core.fft_size || last_decim_used != cfg_core.decimation || last_sr_used != cfg_core.sample_rate) {
+            zoomfft_f0 = std::make_unique<tuner::ZoomFFT>(cfg_core);
         }
 
         // Expected decimated output length Nz
@@ -378,6 +393,7 @@ private:
         }
 
         // If not enough data even for fast path, fall back to current decimated chunk
+        float f0_meas = 0.0f, f2_meas = 0.0f;
         if (last_nz <= 8) {
             std::vector<float> chunk_decimated;
             chunk_decimated.reserve(static_cast<size_t>(num_samples / std::max(1, frontend_decimation)) + 1);
@@ -385,8 +401,77 @@ private:
                 chunk_decimated.push_back(input[i]);
             }
             magnitudes = zoomfft->process(chunk_decimated.data(), (int)chunk_decimated.size(), center_frequency);
+            // f2 near center (search only within ±40 cents of center)
+            if (!magnitudes.empty()) {
+                int n = (int)magnitudes.size();
+                int center_bin = (n - 1) / 2;
+                int half_range = std::max(1, (int)std::round(40.0f * (n - 1) / 240.0f));
+                int i0 = std::max(0, center_bin - half_range);
+                int i1 = std::min(n - 1, center_bin + half_range);
+                float max_mag = 0.0f; int peak_bin_local = center_bin;
+                for (int i = i0; i <= i1; ++i) if (magnitudes[i] > max_mag) { max_mag = magnitudes[i]; peak_bin_local = i; }
+                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n - 1));
+                f2_meas = center_frequency * std::pow(2.0f, cents_local / 1200.0f);
+                // Estimate SNR around f2: peak / mean
+                double sum = 0.0; for (float v : magnitudes) sum += v; double mean = (n == 0 ? 1.0 : sum / n);
+                double snr2 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                last_snr2_linear = (float)snr2;
+                last_mag2 = max_mag;
+            }
+            // f0 via second pass centered at ~220 when focusing on A3
+            float f0_center = center_frequency * 0.5f;
+            auto mags_f0 = zoomfft_f0->process(chunk_decimated.data(), (int)chunk_decimated.size(), f0_center);
+            if (!mags_f0.empty()) {
+                int n0 = (int)mags_f0.size();
+                int center_bin0 = (n0 - 1) / 2;
+                int half_range0 = std::max(1, (int)std::round(40.0f * (n0 - 1) / 240.0f));
+                int j0 = std::max(0, center_bin0 - half_range0);
+                int j1 = std::min(n0 - 1, center_bin0 + half_range0);
+                float max_mag = 0.0f; int peak_bin_local = center_bin0;
+                for (int j = j0; j <= j1; ++j) if (mags_f0[j] > max_mag) { max_mag = mags_f0[j]; peak_bin_local = j; }
+                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n0 - 1));
+                f0_meas = f0_center * std::pow(2.0f, cents_local / 1200.0f);
+                double sum = 0.0; for (float v : mags_f0) sum += v; double mean = (n0 == 0 ? 1.0 : sum / n0);
+                double snr0 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                last_snr0_linear = (float)snr0;
+                last_mag0 = max_mag;
+            }
         } else {
             magnitudes = zoomfft->process(proc_input.data(), (int)proc_input.size(), center_frequency);
+            // f2 from this pass
+            if (!magnitudes.empty()) {
+                int n = (int)magnitudes.size();
+                int center_bin = (n - 1) / 2;
+                int half_range = std::max(1, (int)std::round(40.0f * (n - 1) / 240.0f));
+                int i0 = std::max(0, center_bin - half_range);
+                int i1 = std::min(n - 1, center_bin + half_range);
+                float max_mag = 0.0f; int peak_bin_local = center_bin;
+                for (int i = i0; i <= i1; ++i) if (magnitudes[i] > max_mag) { max_mag = magnitudes[i]; peak_bin_local = i; }
+                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n - 1));
+                f2_meas = center_frequency * std::pow(2.0f, cents_local / 1200.0f);
+                double sum = 0.0; for (float v : magnitudes) sum += v; double mean = (n == 0 ? 1.0 : sum / n);
+                double snr2 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                last_snr2_linear = (float)snr2;
+                last_mag2 = max_mag;
+            }
+            // Parallel f0 pass
+            float f0_center = center_frequency * 0.5f;
+            auto mags_f0 = zoomfft_f0->process(proc_input.data(), (int)proc_input.size(), f0_center);
+            if (!mags_f0.empty()) {
+                int n0 = (int)mags_f0.size();
+                int center_bin0 = (n0 - 1) / 2;
+                int half_range0 = std::max(1, (int)std::round(40.0f * (n0 - 1) / 240.0f));
+                int j0 = std::max(0, center_bin0 - half_range0);
+                int j1 = std::min(n0 - 1, center_bin0 + half_range0);
+                float max_mag = 0.0f; int peak_bin_local = center_bin0;
+                for (int j = j0; j <= j1; ++j) if (mags_f0[j] > max_mag) { max_mag = mags_f0[j]; peak_bin_local = j; }
+                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n0 - 1));
+                f0_meas = f0_center * std::pow(2.0f, cents_local / 1200.0f);
+                double sum = 0.0; for (float v : mags_f0) sum += v; double mean = (n0 == 0 ? 1.0 : sum / n0);
+                double snr0 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                last_snr0_linear = (float)snr0;
+                last_mag0 = max_mag;
+            }
         }
         
         // Thread-safe update
@@ -408,6 +493,10 @@ private:
         peak_frequency = cf_guard * std::pow(2.0f, cents / 1200.0f);
         peak_magnitude = max_mag;
         frames_processed++;
+
+        // feed measurements with strength to Notes controller
+        // Feed NotesState (logic only)
+        notes_state.ingest_measurement(gui::NotesStateReading{f0_meas, f2_meas, last_mag0, last_mag2, last_snr0_linear, last_snr2_linear});
         
         // Update waterfall according to speed control
         if (++waterfall_counter >= std::max(1, waterfall_stride)) {
@@ -419,9 +508,20 @@ private:
     }
     
     void render_gui() {
+        // Always derive center frequency from Notes controller/session (source of truth)
+        notes_state.update_from_session(current_session);
+        center_frequency = notes_state.center_frequency_hz();
+
         // Main menu bar
         if (ImGui::BeginMainMenuBar()) {
             command_registry.draw_main_menu_bar();
+            if (ImGui::BeginMenu("Tuning")) {
+                if (ImGui::MenuItem("Notes & Temperament")) {
+                    show_notes_controller = true;
+                    show_settings_page = false;
+                }
+                ImGui::EndMenu();
+            }
             if (ImGui::BeginMenu("Mode")) {
                 bool desktop = (ui_mode == 0);
                 if (ImGui::MenuItem("Desktop (Docking)", nullptr, desktop)) {
@@ -440,6 +540,12 @@ private:
             if (ImGui::BeginMenu("Audio")) {
                 if (ImGui::MenuItem("Microphone Setup...")) {
                     show_mic_setup = true;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Analysis")) {
+                if (ImGui::MenuItem("Inharmonicity Calculations")) {
+                    show_inharmonicity = true;
                 }
                 ImGui::EndMenu();
             }
@@ -499,9 +605,15 @@ private:
                 std::snprintf(name_buf, sizeof(name_buf), "%s_%s_%dhz.json", date_buf, label.c_str(), a4_round);
                 current_session.name = name_buf;
                 current_session.path = std::string("sessions/") + name_buf;
+                // Start on A3 (key 37) and center on its 2nd partial (A4 frequency)
+                notes_state.set_key_index(36); // 0-based: 36 -> key 37 (A3)
+                notes_state.set_preferred_partial_k(2);
                 current_page = AppPage::Main;
             };
             gui::render_new_session_setup(current_session, scb);
+            // Keep center frequency in sync with notes state computation
+            notes_state.update_from_session(current_session);
+            center_frequency = notes_state.center_frequency_hz();
             return;
         }
 
@@ -680,6 +792,11 @@ private:
             }
             if (show_long_analysis) { long_view.show_window = true; }
             long_view.render(long_engine, spectrum_view, center_frequency, last_effective_fs, precise_fft_size, precise_decimation);
+            if (show_inharmonicity) {
+                bool open = true;
+                render_inharmonicity_window(notes_state, current_session, open);
+                if (!open) show_inharmonicity = false;
+            }
             // Settings in a separate window
             if (show_settings_page) {
                 if (ImGui::Begin("Settings")) {
@@ -692,6 +809,15 @@ private:
                                          &waterfall_view,
                                          waterfall_stride,
                                          &concentric_view);
+                }
+                ImGui::End();
+            }
+            // Notes & Temperament window
+            if (show_notes_controller) {
+                if (ImGui::Begin("Notes", &show_notes_controller)) {
+                    notes_controller.render(current_session, notes_state);
+                    // Update center frequency from state
+                    center_frequency = notes_state.center_frequency_hz();
                 }
                 ImGui::End();
             }
@@ -765,6 +891,8 @@ private:
             ImGui::SameLine();
             if (ImGui::Button(u8"\uE3AC")) show_settings_page = true;  // settings
             ImGui::SameLine();
+            if (ImGui::Button("Notes")) { show_notes_controller = true; show_settings_page = false; }
+            ImGui::SameLine();
             const char* mic_icon = u8"\uE31D";
             const bool mic_was_off = !mic_enabled;
             if (mic_was_off) {
@@ -818,6 +946,13 @@ private:
                                      waterfall_stride,
                                      &concentric_view);
             } else {
+                // When notes controller is visible in kiosk mode, use it for center frequency
+                if (show_notes_controller) {
+                    ImGui::BeginChild("NotesControllerPanel", ImVec2(0, 220), true);
+                    notes_controller.render(current_session, notes_state);
+                    center_frequency = notes_state.center_frequency_hz();
+                    ImGui::EndChild();
+                }
                 if (show_concentric) {
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
@@ -1033,6 +1168,15 @@ private:
             "Help",
             [this]{ return true; },
             [this]{ command_registry.open_palette(); }
+        });
+        // Tuning: Notes window
+        command_registry.register_command(Command{
+            "tuning.notes",
+            "Open Notes & Temperament",
+            "Ctrl+N",
+            "Tuning",
+            [this]{ return true; },
+            [this]{ show_notes_controller = true; show_settings_page = false; }
         });
     }
 };

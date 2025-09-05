@@ -16,11 +16,11 @@ void SettingsPage::render(float& center_frequency_hz,
                           ConcentricView* concentric_view) {
     if (ImGui::BeginTabBar("SettingsTabs")) {
         if (ImGui::BeginTabItem("General")) {
-            ImGui::SliderFloat("Center Freq", &center_frequency_hz, 200.0f, 1000.0f, "%.1f Hz");
             ImGui::Text("FFT Size: 16384 (fixed)");
             precise_fft_size = 16384;
             ImGui::SliderInt("Precise D", &precise_decimation, 4, 64);
             ImGui::SliderFloat("Precise Window (s)", &precise_window_seconds, 0.10f, 2.00f, "%.2f s");
+            ImGui::TextDisabled("Note/Center frequency is controlled in the Notes window.");
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Spectrum")) {
@@ -108,6 +108,25 @@ void SettingsPage::render(float& center_frequency_hz,
             ImGui::SliderInt("Waterfall Stride (1=fast)", &waterfall_stride, 1, 20);
             ImGui::SameLine();
             ImGui::Text("x%.1f", 1.0f / (float)std::max(1, waterfall_stride));
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Notes Capture")) {
+            ImGui::TextUnformatted("Capture / Lock Settings");
+            // Access global NotesController via a simple registry would be better; for now expose basic knobs
+            // These will be fetched/applied from the owning main window when rendering settings.
+            static int capture_period = 40;
+            static int max_caps = 10;
+            static float snr_min = 3.0f;
+            static float balance_min = 0.05f; // 5%
+            static float mad_lock = 0.4f;
+            static float max_err = 15.0f;
+            ImGui::SliderInt("Period (frames)", &capture_period, 5, 120);
+            ImGui::SliderInt("Max captures", &max_caps, 3, 30);
+            ImGui::SliderFloat("SNR min (peak/mean)", &snr_min, 1.0f, 10.0f, "%.2f");
+            ImGui::SliderFloat("Balance min (weaker/stronger)", &balance_min, 0.0f, 0.5f, "%.2f");
+            ImGui::SliderFloat("MAD lock (cents)", &mad_lock, 0.1f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Max |error| (cents)", &max_err, 5.0f, 50.0f, "%.1f");
+            ImGui::TextDisabled("Apply in Notes window > Capture params (debug)");
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

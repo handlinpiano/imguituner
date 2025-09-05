@@ -1,0 +1,10 @@
+{
+  "name": "Equal Tempered",
+  "alias": "equal-tempered",
+  "description": "A clear portrayal of the problem of Equal Temperament. There are no pure intervals - the 5ths are all flat; the major thirds are all sharp, and the minor thirds are all flat. This temperament, so present in most pianist's ears, has trained us to accept sharp major thirds as common... wait until you hear what a pure third sounds like!",
+  "deviation_from_et_cents": true,
+  "note_order": "C",
+  "row_labels": ["et_cents_variation"],
+  "row_units": ["cents"],
+  "rows": [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+}

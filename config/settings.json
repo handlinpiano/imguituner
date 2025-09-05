@@ -1,5 +1,5 @@
 {
-  "center_frequency_hz": 452.000,
+  "center_frequency_hz": 440.000,
   "precise_fft_size": 16384,
   "precise_decimation": 16,
   "precise_window_seconds": 0.630,
@@ -11,6 +11,6 @@
   "concentric_color_scheme_idx": 2,
   "show_cent_labels": true,
   "cent_label_size": 2,
-  "ui_mode": 1,
+  "ui_mode": 0,
   "last_session_path": ""
 }

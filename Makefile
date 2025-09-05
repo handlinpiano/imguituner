@@ -61,9 +61,15 @@ TUNER_GUI_OBJS = gui/main_window.o \
                  gui/plots/long_analysis_plot.o \
                  gui/plots/waterfall_plot.o \
                  gui/plots/concentric_plot.o \
+                 gui/pages/notes_controller.o \
                  gui/pages/landing_page.o \
                  gui/pages/mic_setup.o \
                  gui/pages/new_session_setup.o \
+                 gui/pages/notes_state.o \
+                 gui/temperaments/loader.o \
+                 gui/temperaments/compute.o \
+                 gui/analysis/octave_lock_tracker.o \
+                 gui/analysis/inharmonicity_window.o \
                  gui/plots/settings_page.o \
                  gui/analysis/long_analysis_engine.o \
                  platform/alsa/audio_input_alsa.o \
@@ -142,10 +148,28 @@ gui/views/concentric_view.o: gui/views/concentric_view.cpp gui/views/concentric_
 gui/analysis/long_analysis_engine.o: gui/analysis/long_analysis_engine.cpp gui/analysis/long_analysis_engine.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
+gui/analysis/octave_lock_tracker.o: gui/analysis/octave_lock_tracker.cpp gui/analysis/octave_lock_tracker.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/analysis/inharmonicity_window.o: gui/analysis/inharmonicity_window.cpp gui/analysis/inharmonicity_window.hpp gui/pages/notes_state.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
 gui/pages/landing_page.o: gui/pages/landing_page.cpp gui/pages/landing_page.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 gui/pages/new_session_setup.o: gui/pages/new_session_setup.cpp gui/pages/new_session_setup.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/pages/notes_state.o: gui/pages/notes_state.cpp gui/pages/notes_state.hpp gui/analysis/octave_lock_tracker.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/pages/notes_controller.o: gui/pages/notes_controller.cpp gui/pages/notes_controller.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/temperaments/loader.o: gui/temperaments/loader.cpp gui/temperaments/loader.hpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
+
+gui/temperaments/compute.o: gui/temperaments/compute.cpp gui/temperaments/compute.hpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GUI_INCLUDES) -c -o $@ $<
 
 gui/pages/mic_setup.o: gui/pages/mic_setup.cpp gui/pages/mic_setup.hpp
