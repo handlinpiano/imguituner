@@ -1,9 +1,10 @@
 #pragma once
 
 #include <imgui.h>
-#include "plots/spectrum_plot.hpp"
-#include "plots/concentric_plot.hpp"
-#include "plots/waterfall_plot.hpp"
+#include "views/spectrum_view.hpp"
+#include "views/concentric_view.hpp"
+#include "views/waterfall_view.hpp"
+#include "pages/notes_state.hpp"
 
 namespace gui {
 
@@ -18,7 +19,8 @@ public:
                 SpectrumView& spectrum_view,
                 WaterfallView* waterfall_view,
                 int& waterfall_stride,
-                ConcentricView* concentric_view = nullptr);
+                ConcentricView* concentric_view = nullptr,
+                gui::NotesState* notes_state = nullptr);
 };
 
 } // namespace gui

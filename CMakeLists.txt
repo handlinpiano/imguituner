@@ -15,15 +15,17 @@ pkg_check_modules(ALSA REQUIRED alsa)
 # Find FFTW3
 pkg_check_modules(FFTW3 fftw3f)
 
-# Main library with core DSP components
+# Main library with core DSP components and ALSA backend
 add_library(tuner_core STATIC
-    src/zoom_fft.cpp
-    src/audio_processor.cpp
-    src/butterworth_filter.cpp
+    core/zoom_fft.cpp
+    core/butterworth_filter.cpp
+    core/fft/fft_utils.cpp
+    platform/alsa/audio_input_alsa.cpp
 )
 
 target_include_directories(tuner_core PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/tuner
     ${ALSA_INCLUDE_DIRS}
 )
 

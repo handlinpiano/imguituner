@@ -32,6 +32,14 @@ public:
 
     void ingest_measurement(const NotesStateReading& r);
 
+    // Live (per-frame) measurements for troubleshooting (not gated)
+    void set_live_measurements(float f0_hz, float f2_hz, float snr0, float snr2) {
+        live_f0_hz_ = f0_hz; live_f2_hz_ = f2_hz; live_snr0_ = snr0; live_snr2_ = snr2; }
+    float live_f0_hz() const { return live_f0_hz_; }
+    float live_f2_hz() const { return live_f2_hz_; }
+    float live_snr0() const { return live_snr0_; }
+    float live_snr2() const { return live_snr2_; }
+
     float center_frequency_hz() const { return center_hz_; }
     const OctaveLockTracker& tracker() const { return tracker_; }
     OctaveLockTracker& tracker() { return tracker_; }
@@ -43,6 +51,12 @@ private:
     OctaveLockTracker tracker_{};
     struct NoteAnalysis { bool has_b=false; float B=0.0f; float f1_inferred=0.0f; };
     NoteAnalysis per_note_[88]{};
+
+    // Live fields
+    float live_f0_hz_ = 0.0f;
+    float live_f2_hz_ = 0.0f;
+    float live_snr0_ = 0.0f;
+    float live_snr2_ = 0.0f;
 };
 
 }

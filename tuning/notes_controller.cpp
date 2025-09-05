@@ -78,10 +78,13 @@ void NotesController::render(const tuner::SessionSettings& session, const NotesS
 
     ImGui::Separator();
 
+    // Use the note index from state for display
+    int sel = state.key_index();
+
     // Current note
     if (ImGui::CollapsingHeader("Current Note", ImGuiTreeNodeFlags_DefaultOpen)) {
-        int knum = selected_note_index_ + 1;
-        std::string label = make_plain_note_label_from_index(selected_note_index_);
+        int knum = sel + 1;
+        std::string label = make_plain_note_label_from_index(sel);
         int pk = state.preferred_partial_k();
         char partial_note[96];
         if (pk > 1) std::snprintf(partial_note, sizeof(partial_note), "%d %s — %s partial (center)", knum, label.c_str(), ordinal(pk));
@@ -90,9 +93,9 @@ void NotesController::render(const tuner::SessionSettings& session, const NotesS
     }
 
     // Computed
-    float computed_center_hz = compute_note_frequency_hz(session, selected_note_index_);
-    const int key_number = selected_note_index_ + 1; // 1..88
-    const std::string note_label = make_plain_note_label_from_index(selected_note_index_);
+    float computed_center_hz = compute_note_frequency_hz(session, sel);
+    const int key_number = sel + 1; // 1..88
+    const std::string note_label = make_plain_note_label_from_index(sel);
     const float a4_hz_const = 440.0f * std::pow(2.0f, session.a4_offset_cents / 1200.0f);
     const float global_hz_offset = a4_hz_const - 440.0f;
     const float global_cents_offset = session.a4_offset_cents;
@@ -133,6 +136,13 @@ void NotesController::render(const tuner::SessionSettings& session, const NotesS
             // Approximate inharmonicity B from small-signal model: r_norm ≈ 1 + 3B/2 -> B ≈ (2/3)(r_norm - 1)
             float B_approx = (2.0f / 3.0f) * (r_norm - 1.0f);
             ImGui::Text("Inharmonicity B (approx): %.6g", B_approx);
+        }
+        // Raw live readout for troubleshooting
+        if (ImGui::CollapsingHeader("Live (raw)", ImGuiTreeNodeFlags_None)) {
+            float f0 = state.live_f0_hz(); float f2 = state.live_f2_hz();
+            float r_abs = (f0>0 && f2>0) ? (f2/f0) : 0.0f;
+            ImGui::Text("Fundamental ~ %.3f Hz | 2nd ~ %.3f Hz | ratio: %.6f", f0, f2, r_abs);
+            ImGui::Text("SNR0=%.2f  SNR2=%.2f", state.live_snr0(), state.live_snr2());
         }
     }
 }

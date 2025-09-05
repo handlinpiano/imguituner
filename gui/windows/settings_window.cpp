@@ -1,4 +1,4 @@
-#include "settings_page.hpp"
+#include "windows/settings_window.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -13,7 +13,8 @@ void SettingsPage::render(float& center_frequency_hz,
                           SpectrumView& spectrum_view,
                           WaterfallView* waterfall_view,
                           int& waterfall_stride,
-                          ConcentricView* concentric_view) {
+                          ConcentricView* concentric_view,
+                          gui::NotesState* notes_state) {
     if (ImGui::BeginTabBar("SettingsTabs")) {
         if (ImGui::BeginTabItem("General")) {
             ImGui::Text("FFT Size: 16384 (fixed)");
@@ -112,21 +113,34 @@ void SettingsPage::render(float& center_frequency_hz,
         }
         if (ImGui::BeginTabItem("Notes Capture")) {
             ImGui::TextUnformatted("Capture / Lock Settings");
-            // Access global NotesController via a simple registry would be better; for now expose basic knobs
-            // These will be fetched/applied from the owning main window when rendering settings.
-            static int capture_period = 40;
-            static int max_caps = 10;
-            static float snr_min = 3.0f;
-            static float balance_min = 0.05f; // 5%
-            static float mad_lock = 0.4f;
-            static float max_err = 15.0f;
-            ImGui::SliderInt("Period (frames)", &capture_period, 5, 120);
-            ImGui::SliderInt("Max captures", &max_caps, 3, 30);
-            ImGui::SliderFloat("SNR min (peak/mean)", &snr_min, 1.0f, 10.0f, "%.2f");
+            gui::OctaveLockConfig cfg = notes_state ? notes_state->tracker().config() : gui::OctaveLockConfig{};
+            int period = cfg.capture_period_frames;
+            int max_caps = cfg.max_captures;
+            float snr_min = cfg.snr_min_linear;
+            float balance_min = cfg.strength_balance_min;
+            float mad_lock = cfg.mad_threshold_cents;
+            float max_err = cfg.cents_plausible_abs;
+            float low_band = cfg.band_low_ratio;
+            float high_band = cfg.band_high_ratio;
+            ImGui::SliderInt("Period (frames)", &period, 5, 120);
+            ImGui::SliderInt("Max captures", &max_caps, 3, 50);
+            ImGui::SliderFloat("SNR min (peak/median)", &snr_min, 0.5f, 10.0f, "%.2f");
             ImGui::SliderFloat("Balance min (weaker/stronger)", &balance_min, 0.0f, 0.5f, "%.2f");
             ImGui::SliderFloat("MAD lock (cents)", &mad_lock, 0.1f, 2.0f, "%.2f");
-            ImGui::SliderFloat("Max |error| (cents)", &max_err, 5.0f, 50.0f, "%.1f");
-            ImGui::TextDisabled("Apply in Notes window > Capture params (debug)");
+            ImGui::SliderFloat("Max |deviation| (cents)", &max_err, 5.0f, 50.0f, "%.1f");
+            ImGui::SliderFloat("Strength band low", &low_band, 0.5f, 0.95f, "%.2f");
+            ImGui::SliderFloat("Strength band high", &high_band, 0.80f, 1.0f, "%.2f");
+            if (notes_state && ImGui::Button("Apply")) {
+                cfg.capture_period_frames = period;
+                cfg.max_captures = max_caps;
+                cfg.snr_min_linear = snr_min;
+                cfg.strength_balance_min = balance_min;
+                cfg.mad_threshold_cents = mad_lock;
+                cfg.cents_plausible_abs = max_err;
+                cfg.band_low_ratio = low_band;
+                cfg.band_high_ratio = high_band;
+                notes_state->tracker().set_config(cfg);
+            }
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

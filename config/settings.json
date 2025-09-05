@@ -1,8 +1,8 @@
 {
   "center_frequency_hz": 440.000,
   "precise_fft_size": 16384,
-  "precise_decimation": 16,
-  "precise_window_seconds": 0.630,
+  "precise_decimation": 8,
+  "precise_window_seconds": 0.800,
   "show_frequency_lines": true,
   "show_peak_line": true,
   "bell_curve_width": 1.000,

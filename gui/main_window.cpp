@@ -12,9 +12,9 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
-#include "plots/spectrum_plot.hpp"
-#include "plots/waterfall_plot.hpp"
-#include "settings_page.hpp"
+#include "views/spectrum_view.hpp"
+#include "views/waterfall_view.hpp"
+#include "windows/settings_window.hpp"
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
 #include "session_settings.hpp"
@@ -23,9 +23,9 @@
 #include "pages/mic_setup.hpp"
 #include "zoom_fft.hpp"
 #include "fft/fft_utils.hpp"
-#include "plots/concentric_plot.hpp"
+#include "views/concentric_view.hpp"
 #include "analysis/long_analysis_engine.hpp"
-#include "plots/long_analysis_plot.hpp"
+#include "views/long_analysis_view.hpp"
 #include "analysis/inharmonicity_window.hpp"
 #include "pages/notes_controller.hpp"
 
@@ -412,9 +412,10 @@ private:
                 for (int i = i0; i <= i1; ++i) if (magnitudes[i] > max_mag) { max_mag = magnitudes[i]; peak_bin_local = i; }
                 float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n - 1));
                 f2_meas = center_frequency * std::pow(2.0f, cents_local / 1200.0f);
-                // Estimate SNR around f2: peak / mean
-                double sum = 0.0; for (float v : magnitudes) sum += v; double mean = (n == 0 ? 1.0 : sum / n);
-                double snr2 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                // Estimate SNR as peak / median for robustness
+                std::vector<float> tmp = magnitudes; std::nth_element(tmp.begin(), tmp.begin()+tmp.size()/2, tmp.end());
+                double median = tmp[tmp.size()/2]; if (median <= 1e-9) median = 1e-9;
+                double snr2 = max_mag / median;
                 last_snr2_linear = (float)snr2;
                 last_mag2 = max_mag;
             }
@@ -431,8 +432,9 @@ private:
                 for (int j = j0; j <= j1; ++j) if (mags_f0[j] > max_mag) { max_mag = mags_f0[j]; peak_bin_local = j; }
                 float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n0 - 1));
                 f0_meas = f0_center * std::pow(2.0f, cents_local / 1200.0f);
-                double sum = 0.0; for (float v : mags_f0) sum += v; double mean = (n0 == 0 ? 1.0 : sum / n0);
-                double snr0 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                std::vector<float> tmp0 = mags_f0; std::nth_element(tmp0.begin(), tmp0.begin()+tmp0.size()/2, tmp0.end());
+                double median0 = tmp0[tmp0.size()/2]; if (median0 <= 1e-9) median0 = 1e-9;
+                double snr0 = max_mag / median0;
                 last_snr0_linear = (float)snr0;
                 last_mag0 = max_mag;
             }
@@ -449,8 +451,9 @@ private:
                 for (int i = i0; i <= i1; ++i) if (magnitudes[i] > max_mag) { max_mag = magnitudes[i]; peak_bin_local = i; }
                 float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n - 1));
                 f2_meas = center_frequency * std::pow(2.0f, cents_local / 1200.0f);
-                double sum = 0.0; for (float v : magnitudes) sum += v; double mean = (n == 0 ? 1.0 : sum / n);
-                double snr2 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                std::vector<float> tmp = magnitudes; std::nth_element(tmp.begin(), tmp.begin()+tmp.size()/2, tmp.end());
+                double median = tmp[tmp.size()/2]; if (median <= 1e-9) median = 1e-9;
+                double snr2 = max_mag / median;
                 last_snr2_linear = (float)snr2;
                 last_mag2 = max_mag;
             }
@@ -467,8 +470,9 @@ private:
                 for (int j = j0; j <= j1; ++j) if (mags_f0[j] > max_mag) { max_mag = mags_f0[j]; peak_bin_local = j; }
                 float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n0 - 1));
                 f0_meas = f0_center * std::pow(2.0f, cents_local / 1200.0f);
-                double sum = 0.0; for (float v : mags_f0) sum += v; double mean = (n0 == 0 ? 1.0 : sum / n0);
-                double snr0 = (mean > 1e-9 ? (max_mag / mean) : 0.0);
+                std::vector<float> tmp0 = mags_f0; std::nth_element(tmp0.begin(), tmp0.begin()+tmp0.size()/2, tmp0.end());
+                double median0 = tmp0[tmp0.size()/2]; if (median0 <= 1e-9) median0 = 1e-9;
+                double snr0 = max_mag / median0;
                 last_snr0_linear = (float)snr0;
                 last_mag0 = max_mag;
             }
@@ -494,9 +498,16 @@ private:
         peak_magnitude = max_mag;
         frames_processed++;
 
-        // feed measurements with strength to Notes controller
-        // Feed NotesState (logic only)
-        notes_state.ingest_measurement(gui::NotesStateReading{f0_meas, f2_meas, last_mag0, last_mag2, last_snr0_linear, last_snr2_linear});
+        // Feed NotesState (logic only) when lanes and SNR are valid
+        // Publish live values for troubleshooting
+        notes_state.set_live_measurements(f0_meas, f2_meas, last_snr0_linear, last_snr2_linear);
+        if (f0_meas > 0.0f && f2_meas > 0.0f && last_snr0_linear > 0.5f && last_snr2_linear > 0.5f) {
+            gui::NotesStateReading r{};
+            r.f0_hz = f0_meas; r.f2_hz = f2_meas;
+            r.mag0 = last_mag0; r.mag2 = last_mag2;
+            r.snr0 = last_snr0_linear; r.snr2 = last_snr2_linear;
+            notes_state.ingest_measurement(r);
+        }
         
         // Update waterfall according to speed control
         if (++waterfall_counter >= std::max(1, waterfall_stride)) {
@@ -808,7 +819,8 @@ private:
                                          spectrum_view,
                                          &waterfall_view,
                                          waterfall_stride,
-                                         &concentric_view);
+                                         &concentric_view,
+                                         &notes_state);
                 }
                 ImGui::End();
             }
