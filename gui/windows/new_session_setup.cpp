@@ -1,4 +1,4 @@
-#include "pages/new_session_setup.hpp"
+#include "new_session_setup.hpp"
 #include "tuner/session_settings.hpp"
 #include "temperaments/loader.hpp"
 #include <imgui.h>

@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic -DNDEBUG
-INCLUDES = -I./include -I./include/tuner -I./gui -I./gui/plots -I./gui/pages
+INCLUDES = -I. -I./include -I./include/tuner -I./gui -I./gui/views -I./gui/windows -I./tuning -I./dsp/analysis -I./third_party/imgui -I./third_party/imgui/backends
 LIBS = -lasound -lpthread -lm
 
 # ImGui vendored location
@@ -57,21 +57,25 @@ ICON_BROWSER_OBJS = gui/icon_browser.o $(IMGUI_OBJS)
 # Object files for GUI
 IMGUI_OBJS = $(IMGUI_SRCS:.cpp=.o)
 TUNER_GUI_OBJS = gui/main_window.o \
-                 gui/plots/spectrum_plot.o \
-                 gui/plots/long_analysis_plot.o \
-                 gui/plots/waterfall_plot.o \
-                 gui/plots/concentric_plot.o \
-                 gui/pages/notes_controller.o \
-                 gui/pages/landing_page.o \
-                 gui/pages/mic_setup.o \
-                 gui/pages/new_session_setup.o \
-                 gui/pages/notes_state.o \
+                 gui/views/spectrum_view.o \
+                 gui/views/inharmonicity_b_view.o \
+                 gui/views/long_analysis_view.o \
+                 gui/views/waterfall_view.o \
+                 gui/views/concentric_view.o \
+                 gui/windows/icon_browser_window.o \
+                 tuning/notes_controller.o \
+                 gui/windows/landing_page.o \
+                 gui/windows/mic_setup.o \
+                 gui/windows/new_session_setup.o \
+                 tuning/notes_state.o \
                  gui/temperaments/loader.o \
                  gui/temperaments/compute.o \
-                 gui/analysis/octave_lock_tracker.o \
-                 gui/analysis/inharmonicity_window.o \
-                 gui/plots/settings_page.o \
-                 gui/analysis/long_analysis_engine.o \
+                 dsp/analysis/octave_lock_tracker.o \
+                 gui/windows/inharmonicity_window.o \
+                 gui/windows/settings_window.o \
+                 dsp/analysis/long_analysis_engine.o \
+                 dsp/zoom_processor.o \
+                 audio/AudioEngine.o \
                  platform/alsa/audio_input_alsa.o \
                  core/app_settings_io.o \
                  core/session_settings_io.o \

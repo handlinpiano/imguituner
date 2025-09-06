@@ -12,20 +12,19 @@
 - Center selection is practical (for SNR/resolution) and can be a higher partial, but all measurements are remapped back to Hk of the note’s fundamental for display and for ratio/cents math.
 - When centering at Hm, measuring lower partials maps by division (≈ f1 = fm/m), higher by multiplication (≈ fk ≈ (k/m)·fm). Display still uses Hk labels.
 
-## Simplest always‑on capture policy (per partial lane k)
-- Gate: per‑partial SNR ≥ SNR_min; accept only if |cents| ≤ C(Bmax) (derived from Bmax).
-- Strength band vs running max: accept only if score in [0.75, 0.95] of lane’s running max (drop very weak and top spikes); running max decays/rolls per cluster (below).
-- Sampling: take one capture every M frames.
-- Buffer: keep the last K accepted captures (or cluster them, see below).
-- Estimate: trimmed median (drop top 5% by |cents|), report median cents and lane MAD.
+## Ultra‑light inharmonicity estimation (adjacent‑triplet convergence)
+- Single SNR gate: require the harmonics in use to have SNR ≥ SNR_min.
+- Adjacent triplets: per frame, choose the best among (1,2,3), (2,3,4), (3,4,5), (4,5,6) subject to availability and note range.
+- Pairwise B: compute B from each pair in the triplet; within‑frame B̂ = median of pairwise B’s; dispersion = MAD.
+- Sanity bounds: require B̂ ∈ [Bmin(note), Bmax(note)] with conservative note‑dependent bounds.
+- Convergence lock: if dispersion ≤ τ_pair and |B̂ − B̂_prev| ≤ τ_time for X consecutive frames, declare B locked. Output B̂ (or running median over last few).
 
 ## Rolling clusters (optional improvement)
 - Form clusters of K captures (e.g., K=20) with independent running max/SNR stats.
 - Discard clusters with low average SNR (silence/air). Final readout is the median of cluster medians; variability = median cluster MAD or MAD of medians.
 
-## Progressive enablement (scales to 8 partials)
-- Always enable H2. When H2 is stable (K≥Kmin and MAD small), enable H3; then H4; stop enabling when a new lane is weak/unreliable (SNR low, out of physics window). Disable lanes if SNR collapses.
-- Heuristic: enable H3 only if mag2/mag1 ≥ r2_min (e.g., 10%), similarly for higher lanes with smaller ratios.
+## Progressive enablement (simplified)
+- Not required for B estimation. We still center where SNR is best, but B uses whichever adjacent triplet is reliable that frame. Baseline initial H ranges per note remain for UI and analysis when desired.
 
 ## Inharmonicity (B) estimation (lightweight, optional)
 - After lanes are stable, fit B by minimizing Σ ρ(|fk(B) − f̂k|) over available lanes (k≥2), where fk(B) = k·f1·sqrt(1 + B·k²), using a short 1‑variable search over B ∈ [Bmin, Bmax].
@@ -43,6 +42,5 @@
 - M (capture period), K (captures per cluster), Kmin (for stability flag).
 
 ## Implementation notes
-- NotesState owns lanes (k=1..8): per‑lane gate/buffer/median/MAD, running max, SNR.
-- NotesController renders technician view: H1 fixed at 1.000000 (0.00 c), Hk shows median ratio and cents; strengths in dB, SNR; no mention of internal centers.
-- Inharmonicity window runs the tiny B fit when lanes are stable.
+- NotesState implements a convergence tracker over adjacent harmonic triplets with a single SNR gate and note‑based sanity bounds; computes B̂ and lock status.
+- NotesController/Windows display Hk lanes and the inharmonicity readout (latest/locked B, which triplet used can be indicated).

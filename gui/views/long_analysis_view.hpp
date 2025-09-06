@@ -3,8 +3,8 @@
 #include <imgui.h>
 #include <vector>
 
-#include "analysis/long_analysis_engine.hpp"
-#include "spectrum_plot.hpp"
+#include "dsp/analysis/long_analysis_engine.hpp"
+#include "spectrum_view.hpp"
 
 namespace gui {
 

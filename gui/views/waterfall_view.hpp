@@ -4,7 +4,7 @@
 #include <imgui.h>
 #include <vector>
 #include <deque>
-#include "spectrum_plot.hpp"
+#include "spectrum_view.hpp"
 
 namespace gui {
 

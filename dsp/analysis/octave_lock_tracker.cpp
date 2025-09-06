@@ -1,4 +1,4 @@
-#include "analysis/octave_lock_tracker.hpp"
+#include "octave_lock_tracker.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -39,6 +39,8 @@ void OctaveLockTracker::push_frame(float f0_hz, float f2_hz,
     if (!finite_pos(f0_hz) || !finite_pos(f2_hz)) { last_capture_reason_ = "invalid freq"; return; }
     if (!finite_pos(mag0) || !finite_pos(mag2)) { last_capture_reason_ = "invalid mag"; return; }
     if (!finite_pos(snr0) || !finite_pos(snr2)) { last_capture_reason_ = "invalid snr"; return; }
+    // Clamp SNR floor to avoid inflated values in silence; require both above threshold
+    snr0 = std::max(snr0, 0.0f); snr2 = std::max(snr2, 0.0f);
     if (snr0 < cfg_.snr_min_linear || snr2 < cfg_.snr_min_linear) { last_capture_reason_ = "snr too low"; return; }
     float mn = std::min(mag0, mag2), mx = std::max(mag0, mag2);
     if (mn < cfg_.strength_balance_min * mx) { last_capture_reason_ = "unbalanced"; return; }
@@ -48,13 +50,14 @@ void OctaveLockTracker::push_frame(float f0_hz, float f2_hz,
     float cents = 1200.0f * std::log2(r);
     if (std::fabs(cents) > cfg_.cents_plausible_abs) { last_capture_reason_ = "implausible"; return; }
 
-    float score = mn * mn; // robust simpler score; track running max
-    if (score > running_max_score_) running_max_score_ = score;
-    // Simple band-pass on strength relative to running max
+    // Score by raw magnitude; apply gentle decay to running max to avoid suppressing real signals
+    float score = mn * mn;
+    running_max_score_ = std::max(running_max_score_ * 0.98f, score); // 2% decay per attempt
+    // Only enforce the low-band gate; allow very strong frames to pass
     if (running_max_score_ > 0.0f) {
         float r = score / running_max_score_;
         if (r < cfg_.band_low_ratio) { last_capture_reason_ = "too weak"; return; }
-        if (r > cfg_.band_high_ratio) { last_capture_reason_ = "too strong"; return; }
+        // no upper gate by default
     }
     captures_.push_back(Capture{cents, r, mag0, mag2, score});
     if ((int)captures_.size() > cfg_.max_captures) captures_.erase(captures_.begin());

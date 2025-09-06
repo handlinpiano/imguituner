@@ -7,7 +7,7 @@
 namespace gui {
 
 struct OctaveLockConfig {
-    int capture_period_frames = 40;     // take one sample every N frames
+    int capture_period_frames = 15;     // take one sample every N frames (faster default)
     int max_captures = 10;              // keep last K captures
     float snr_min_linear = 1.5f;        // require peak/mean >= this for both partials (≈ 3.5 dB)
     float strength_balance_min = 0.0f;  // 0 disables balance gate

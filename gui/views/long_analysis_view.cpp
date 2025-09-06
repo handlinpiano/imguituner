@@ -1,4 +1,4 @@
-#include "long_analysis_plot.hpp"
+#include "long_analysis_view.hpp"
 
 namespace gui {
 

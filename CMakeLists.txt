@@ -21,6 +21,7 @@ add_library(tuner_core STATIC
     core/butterworth_filter.cpp
     core/fft/fft_utils.cpp
     platform/alsa/audio_input_alsa.cpp
+    dsp/zoom_processor.cpp
 )
 
 target_include_directories(tuner_core PUBLIC 

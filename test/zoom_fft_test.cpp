@@ -303,7 +303,7 @@ int main(int argc, char* argv[]) {
         }
         
         // Check for latency issues
-        auto stats = audio.get_latency_stats();
+        auto stats = audio->get_latency_stats();
         if (stats.xruns > 0) {
             std::cout << "\nWarning: " << stats.xruns << " buffer underruns detected" << std::endl;
         }

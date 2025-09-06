@@ -1,4 +1,4 @@
-#include "pages/landing_page.hpp"
+#include "landing_page.hpp"
 #include <imgui.h>
 
 namespace gui {

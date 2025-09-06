@@ -2,7 +2,7 @@
 
 #include <string>
 #include <vector>
-#include "pages/notes_state.hpp"
+#include "notes_state.hpp"
 
 // (no ImGui forward declarations required)
 

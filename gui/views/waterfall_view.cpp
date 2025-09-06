@@ -1,5 +1,4 @@
- 
- #include "waterfall_plot.hpp"
+#include "waterfall_view.hpp"
 
 #include <algorithm>
 #include <cmath>

@@ -111,38 +111,7 @@ void SettingsPage::render(float& center_frequency_hz,
             ImGui::Text("x%.1f", 1.0f / (float)std::max(1, waterfall_stride));
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Notes Capture")) {
-            ImGui::TextUnformatted("Capture / Lock Settings");
-            gui::OctaveLockConfig cfg = notes_state ? notes_state->tracker().config() : gui::OctaveLockConfig{};
-            int period = cfg.capture_period_frames;
-            int max_caps = cfg.max_captures;
-            float snr_min = cfg.snr_min_linear;
-            float balance_min = cfg.strength_balance_min;
-            float mad_lock = cfg.mad_threshold_cents;
-            float max_err = cfg.cents_plausible_abs;
-            float low_band = cfg.band_low_ratio;
-            float high_band = cfg.band_high_ratio;
-            ImGui::SliderInt("Period (frames)", &period, 5, 120);
-            ImGui::SliderInt("Max captures", &max_caps, 3, 50);
-            ImGui::SliderFloat("SNR min (peak/median)", &snr_min, 0.5f, 10.0f, "%.2f");
-            ImGui::SliderFloat("Balance min (weaker/stronger)", &balance_min, 0.0f, 0.5f, "%.2f");
-            ImGui::SliderFloat("MAD lock (cents)", &mad_lock, 0.1f, 2.0f, "%.2f");
-            ImGui::SliderFloat("Max |deviation| (cents)", &max_err, 5.0f, 50.0f, "%.1f");
-            ImGui::SliderFloat("Strength band low", &low_band, 0.5f, 0.95f, "%.2f");
-            ImGui::SliderFloat("Strength band high", &high_band, 0.80f, 1.0f, "%.2f");
-            if (notes_state && ImGui::Button("Apply")) {
-                cfg.capture_period_frames = period;
-                cfg.max_captures = max_caps;
-                cfg.snr_min_linear = snr_min;
-                cfg.strength_balance_min = balance_min;
-                cfg.mad_threshold_cents = mad_lock;
-                cfg.cents_plausible_abs = max_err;
-                cfg.band_low_ratio = low_band;
-                cfg.band_high_ratio = high_band;
-                notes_state->tracker().set_config(cfg);
-            }
-            ImGui::EndTabItem();
-        }
+        // Notes Capture moved to Inharmonicity window
         ImGui::EndTabBar();
     }
 }

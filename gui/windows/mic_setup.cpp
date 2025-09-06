@@ -1,4 +1,4 @@
-#include "pages/mic_setup.hpp"
+#include "mic_setup.hpp"
 #include <imgui.h>
 #include <alsa/asoundlib.h>
 #include <cstring>

@@ -1,4 +1,4 @@
-#include "pages/notes_controller.hpp"
+#include "notes_controller.hpp"
 #include "tuner/session_settings.hpp"
 #include <imgui.h>
 #include <cmath>

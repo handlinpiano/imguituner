@@ -1,4 +1,4 @@
-#include "spectrum_plot.hpp"
+#include "spectrum_view.hpp"
 #include <cmath>
 #include <cstdio>
 

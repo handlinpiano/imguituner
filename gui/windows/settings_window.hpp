@@ -4,7 +4,7 @@
 #include "views/spectrum_view.hpp"
 #include "views/concentric_view.hpp"
 #include "views/waterfall_view.hpp"
-#include "pages/notes_state.hpp"
+#include "tuning/notes_state.hpp"
 
 namespace gui {
 

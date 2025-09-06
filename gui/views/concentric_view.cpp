@@ -1,4 +1,4 @@
-#include "concentric_plot.hpp"
+#include "concentric_view.hpp"
 #include <cmath>
 #include <cstdio>
 

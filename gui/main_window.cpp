@@ -18,16 +18,19 @@
 #include "app_settings.hpp"
 #include "app_settings_io.hpp"
 #include "session_settings.hpp"
-#include "pages/landing_page.hpp"
-#include "pages/new_session_setup.hpp"
-#include "pages/mic_setup.hpp"
+#include "windows/landing_page.hpp"
+#include "windows/new_session_setup.hpp"
+#include "windows/mic_setup.hpp"
 #include "zoom_fft.hpp"
 #include "fft/fft_utils.hpp"
 #include "views/concentric_view.hpp"
-#include "analysis/long_analysis_engine.hpp"
+#include "dsp/analysis/long_analysis_engine.hpp"
 #include "views/long_analysis_view.hpp"
-#include "analysis/inharmonicity_window.hpp"
-#include "pages/notes_controller.hpp"
+#include "windows/inharmonicity_window.hpp"
+#include "tuning/notes_controller.hpp"
+#include "windows/icon_browser_window.hpp"
+#include "audio/AudioEngine.hpp"
+#include "dsp/zoom_processor.hpp"
 
 // ImGui + OpenGL ES 3 (Pi 4)
 #include <GLES3/gl3.h>
@@ -54,8 +57,8 @@ public:
         
         // Default zoom parameters are configured in cfg_core when processing
 
-        audio_input = createAudioInput(audio_config);
-        audio_input->set_process_callback([this](const float* input, int num_samples) {
+        audio_engine = std::make_unique<tuner::audio::AudioEngine>(audio_config);
+        audio_engine->set_process_callback([this](const float* input, int num_samples) {
             this->process_audio(input, num_samples);
         });
     }
@@ -153,7 +156,7 @@ public:
     void run() {
         if (!init_gui()) return;
         
-        if (!audio_input->start()) {
+        if (!audio_engine->start()) {
             std::cerr << "Failed to start audio\n";
             return;
         }
@@ -169,10 +172,7 @@ public:
             // Global shortcuts
             command_registry.handle_shortcuts(false);
             
-            // Sync Notes state with current session then render GUI
-            notes_state.update_from_session(current_session);
-            
-            
+            // Render GUI
             render_gui();
             
             // Rendering
@@ -206,7 +206,7 @@ public:
         save_settings(settings_path, settings);
 
         // Cleanup
-        audio_input->stop();
+        audio_engine->stop();
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -223,7 +223,7 @@ private:
     float center_frequency;
     // legacy zoom_config removed; using core ZoomFFTConfig on demand
     AudioConfig audio_config;
-    std::unique_ptr<IAudioInput> audio_input;
+    std::unique_ptr<tuner::audio::AudioEngine> audio_engine;
     int frontend_decimation = 1; // fixed at no decimation
     std::deque<float> input_ring;
     unsigned int last_actual_fs = 0;
@@ -256,12 +256,14 @@ private:
     gui::SettingsPage settings_page;
     gui::NotesState notes_state;
     gui::NotesController notes_controller;
+    tuner::dsp::ZoomProcessor zoom_processor;
     tuner::AppSettings settings;
     const char* settings_path = "config/settings.json";
     bool show_icon_browser = false;
     bool show_notes_controller = false;
     bool mic_enabled = true;
     bool show_mic_setup = false;
+    bool show_audio_controls = false;
     bool show_spectrum = true;
     bool show_waterfall = false;
     bool show_concentric = false;
@@ -303,81 +305,29 @@ private:
     void process_audio(const float* input, int num_samples) {
         last_callback_frames.store(num_samples);
         // Track actual sample rate and reflect front-end decimation
-        const unsigned int actual_fs = audio_input->get_config().sample_rate;
+        const unsigned int actual_fs = audio_engine->get_config().sample_rate;
         const unsigned int effective_fs = actual_fs; // no frontend decimation
         // sample rate for core zoom fft is set when constructing cfg_core
         last_actual_fs = actual_fs;
         last_effective_fs = effective_fs;
 
-        // Append front-end decimated samples to ring buffer
+        // Push into DSP processor ring buffer (thread-safe)
         if (input && num_samples > 0) {
-            for (int i = 0; i < num_samples; ++i) {
-                input_ring.push_back(input[i]);
+            // Keep DSP processor parameters in sync with current UI
+            zoom_processor.set_center_frequency(center_frequency);
+            zoom_processor.set_window_seconds(precise_window_seconds);
+            zoom_processor.set_aux_harmonics_enabled(true); // isolated aux scans enabled for harmonics/B
+            // Reconfigure processor if parameters changed
+            if (last_use_fft_size != precise_fft_size || last_use_decimation != precise_decimation || (int)last_effective_fs != (int)actual_fs) {
+                zoom_processor.configure((int)last_effective_fs, precise_fft_size, precise_decimation, 1200);
+                last_use_fft_size = precise_fft_size;
+                last_use_decimation = precise_decimation;
             }
+            zoom_processor.push_samples(input, num_samples);
         }
         // Feed long analysis engine (safe when idle)
         long_engine.feed_audio(input, num_samples, (int)last_actual_fs);
 
-        // Ensure ring buffer holds at most the window needed for a full Zoom FFT
-        // Maintain ring buffer up to the precise time-capped window requirement
-        const int precise_required_samples = precise_fft_size * std::max(1, precise_decimation);
-        const int precise_time_capped = std::min(precise_required_samples, static_cast<int>(last_effective_fs * precise_window_seconds));
-        while (static_cast<int>(input_ring.size()) > precise_time_capped) {
-            input_ring.pop_front();
-        }
-
-        // Build contiguous input window
-        std::vector<float> windowed_input;
-        windowed_input.reserve(input_ring.size());
-        for (float s : input_ring) windowed_input.push_back(s);
-        last_window_samples = static_cast<int>(windowed_input.size());
-
-        // Precise-only processing path using core ZoomFFT
-        std::vector<float> magnitudes;
-        int use_fft_size = precise_fft_size;
-        int use_decimation = precise_decimation;
-        int required_input_samples = precise_time_capped;
-
-        last_required_samples = required_input_samples;
-        last_use_fft_size = use_fft_size;
-        last_use_decimation = use_decimation;
-
-        // Build processing window (take latest required_input_samples from ring)
-        std::vector<float> proc_input;
-        if (required_input_samples > 0) {
-            int take = std::min(required_input_samples, static_cast<int>(input_ring.size()));
-            proc_input.reserve(take);
-            auto it = input_ring.end();
-            for (int i = 0; i < take; ++i) {
-                --it;
-                proc_input.push_back(*it);
-            }
-            std::reverse(proc_input.begin(), proc_input.end());
-        }
-
-        // Configure core ZoomFFT
-        tuner::ZoomFFTConfig cfg_core;
-        cfg_core.decimation = use_decimation;
-        cfg_core.fft_size = use_fft_size;
-        cfg_core.num_bins = 1200; // match previous default
-        cfg_core.sample_rate = static_cast<int>(last_effective_fs);
-        cfg_core.use_hann = true;
-        static std::unique_ptr<tuner::ZoomFFT> zoomfft;
-        static std::unique_ptr<tuner::ZoomFFT> zoomfft_f0; // around ~220 Hz when needed
-        static int last_fft_size_used = 0, last_decim_used = 0, last_sr_used = 0;
-        if (!zoomfft || last_fft_size_used != cfg_core.fft_size || last_decim_used != cfg_core.decimation || last_sr_used != cfg_core.sample_rate) {
-            zoomfft = std::make_unique<tuner::ZoomFFT>(cfg_core);
-            last_fft_size_used = cfg_core.fft_size;
-            last_decim_used = cfg_core.decimation;
-            last_sr_used = cfg_core.sample_rate;
-        }
-        if (!zoomfft_f0 || last_fft_size_used != cfg_core.fft_size || last_decim_used != cfg_core.decimation || last_sr_used != cfg_core.sample_rate) {
-            zoomfft_f0 = std::make_unique<tuner::ZoomFFT>(cfg_core);
-        }
-
-        // Expected decimated output length Nz
-        last_nz = std::min(use_fft_size, static_cast<int>(proc_input.size()) / std::max(1, use_decimation));
-        
         // Compute RMS on latest raw chunk for sanity
         if (input && num_samples > 0) {
             double acc = 0.0;
@@ -391,137 +341,43 @@ private:
             // Feed Mic Setup live level meter
             gui::mic_setup_push_level(last_rms);
         }
-
-        // If not enough data even for fast path, fall back to current decimated chunk
-        float f0_meas = 0.0f, f2_meas = 0.0f;
-        if (last_nz <= 8) {
-            std::vector<float> chunk_decimated;
-            chunk_decimated.reserve(static_cast<size_t>(num_samples / std::max(1, frontend_decimation)) + 1);
-            for (int i = 0; i < num_samples; i += std::max(1, frontend_decimation)) {
-                chunk_decimated.push_back(input[i]);
-            }
-            magnitudes = zoomfft->process(chunk_decimated.data(), (int)chunk_decimated.size(), center_frequency);
-            // f2 near center (search only within ±40 cents of center)
-            if (!magnitudes.empty()) {
-                int n = (int)magnitudes.size();
-                int center_bin = (n - 1) / 2;
-                int half_range = std::max(1, (int)std::round(40.0f * (n - 1) / 240.0f));
-                int i0 = std::max(0, center_bin - half_range);
-                int i1 = std::min(n - 1, center_bin + half_range);
-                float max_mag = 0.0f; int peak_bin_local = center_bin;
-                for (int i = i0; i <= i1; ++i) if (magnitudes[i] > max_mag) { max_mag = magnitudes[i]; peak_bin_local = i; }
-                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n - 1));
-                f2_meas = center_frequency * std::pow(2.0f, cents_local / 1200.0f);
-                // Estimate SNR as peak / median for robustness
-                std::vector<float> tmp = magnitudes; std::nth_element(tmp.begin(), tmp.begin()+tmp.size()/2, tmp.end());
-                double median = tmp[tmp.size()/2]; if (median <= 1e-9) median = 1e-9;
-                double snr2 = max_mag / median;
-                last_snr2_linear = (float)snr2;
-                last_mag2 = max_mag;
-            }
-            // f0 via second pass centered at ~220 when focusing on A3
-            float f0_center = center_frequency * 0.5f;
-            auto mags_f0 = zoomfft_f0->process(chunk_decimated.data(), (int)chunk_decimated.size(), f0_center);
-            if (!mags_f0.empty()) {
-                int n0 = (int)mags_f0.size();
-                int center_bin0 = (n0 - 1) / 2;
-                int half_range0 = std::max(1, (int)std::round(40.0f * (n0 - 1) / 240.0f));
-                int j0 = std::max(0, center_bin0 - half_range0);
-                int j1 = std::min(n0 - 1, center_bin0 + half_range0);
-                float max_mag = 0.0f; int peak_bin_local = center_bin0;
-                for (int j = j0; j <= j1; ++j) if (mags_f0[j] > max_mag) { max_mag = mags_f0[j]; peak_bin_local = j; }
-                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n0 - 1));
-                f0_meas = f0_center * std::pow(2.0f, cents_local / 1200.0f);
-                std::vector<float> tmp0 = mags_f0; std::nth_element(tmp0.begin(), tmp0.begin()+tmp0.size()/2, tmp0.end());
-                double median0 = tmp0[tmp0.size()/2]; if (median0 <= 1e-9) median0 = 1e-9;
-                double snr0 = max_mag / median0;
-                last_snr0_linear = (float)snr0;
-                last_mag0 = max_mag;
-            }
-        } else {
-            magnitudes = zoomfft->process(proc_input.data(), (int)proc_input.size(), center_frequency);
-            // f2 from this pass
-            if (!magnitudes.empty()) {
-                int n = (int)magnitudes.size();
-                int center_bin = (n - 1) / 2;
-                int half_range = std::max(1, (int)std::round(40.0f * (n - 1) / 240.0f));
-                int i0 = std::max(0, center_bin - half_range);
-                int i1 = std::min(n - 1, center_bin + half_range);
-                float max_mag = 0.0f; int peak_bin_local = center_bin;
-                for (int i = i0; i <= i1; ++i) if (magnitudes[i] > max_mag) { max_mag = magnitudes[i]; peak_bin_local = i; }
-                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n - 1));
-                f2_meas = center_frequency * std::pow(2.0f, cents_local / 1200.0f);
-                std::vector<float> tmp = magnitudes; std::nth_element(tmp.begin(), tmp.begin()+tmp.size()/2, tmp.end());
-                double median = tmp[tmp.size()/2]; if (median <= 1e-9) median = 1e-9;
-                double snr2 = max_mag / median;
-                last_snr2_linear = (float)snr2;
-                last_mag2 = max_mag;
-            }
-            // Parallel f0 pass
-            float f0_center = center_frequency * 0.5f;
-            auto mags_f0 = zoomfft_f0->process(proc_input.data(), (int)proc_input.size(), f0_center);
-            if (!mags_f0.empty()) {
-                int n0 = (int)mags_f0.size();
-                int center_bin0 = (n0 - 1) / 2;
-                int half_range0 = std::max(1, (int)std::round(40.0f * (n0 - 1) / 240.0f));
-                int j0 = std::max(0, center_bin0 - half_range0);
-                int j1 = std::min(n0 - 1, center_bin0 + half_range0);
-                float max_mag = 0.0f; int peak_bin_local = center_bin0;
-                for (int j = j0; j <= j1; ++j) if (mags_f0[j] > max_mag) { max_mag = mags_f0[j]; peak_bin_local = j; }
-                float cents_local = -120.0f + 240.0f * (static_cast<float>(peak_bin_local) / (n0 - 1));
-                f0_meas = f0_center * std::pow(2.0f, cents_local / 1200.0f);
-                std::vector<float> tmp0 = mags_f0; std::nth_element(tmp0.begin(), tmp0.begin()+tmp0.size()/2, tmp0.end());
-                double median0 = tmp0[tmp0.size()/2]; if (median0 <= 1e-9) median0 = 1e-9;
-                double snr0 = max_mag / median0;
-                last_snr0_linear = (float)snr0;
-                last_mag0 = max_mag;
-            }
-        }
-        
-        // Thread-safe update
-        current_spectrum = magnitudes;
-        
-        // Find peak
-        float max_mag = 0.0f;
-        int peak_bin = 0;
-        for (size_t i = 0; i < magnitudes.size(); ++i) {
-            if (magnitudes[i] > max_mag) {
-                max_mag = magnitudes[i];
-                peak_bin = static_cast<int>(i);
-            }
-        }
-        
-        // Convert bin to frequency (guard center_frequency)
-        float cf_guard = (center_frequency > 0.0f && std::isfinite(center_frequency)) ? center_frequency : 440.0f;
-        float cents = -120.0f + 240.0f * (static_cast<float>(peak_bin) / (1200 - 1));
-        peak_frequency = cf_guard * std::pow(2.0f, cents / 1200.0f);
-        peak_magnitude = max_mag;
-        frames_processed++;
-
-        // Feed NotesState (logic only) when lanes and SNR are valid
-        // Publish live values for troubleshooting
-        notes_state.set_live_measurements(f0_meas, f2_meas, last_snr0_linear, last_snr2_linear);
-        if (f0_meas > 0.0f && f2_meas > 0.0f && last_snr0_linear > 0.5f && last_snr2_linear > 0.5f) {
-            gui::NotesStateReading r{};
-            r.f0_hz = f0_meas; r.f2_hz = f2_meas;
-            r.mag0 = last_mag0; r.mag2 = last_mag2;
-            r.snr0 = last_snr0_linear; r.snr2 = last_snr2_linear;
-            notes_state.ingest_measurement(r);
-        }
-        
-        // Update waterfall according to speed control
-        if (++waterfall_counter >= std::max(1, waterfall_stride)) {
-            waterfall_counter = 0;
-            waterfall_view.update(magnitudes);
-        }
         // Kick off processing when capture is ready
         long_engine.poll_process();
     }
     
     void render_gui() {
-        // Always derive center frequency from Notes controller/session (source of truth)
-        notes_state.update_from_session(current_session);
+        // Derive center frequency from current Notes state (source of truth)
         center_frequency = notes_state.center_frequency_hz();
+
+        // Ensure DSP processor matches current UI parameters
+        zoom_processor.set_center_frequency(center_frequency);
+        zoom_processor.set_window_seconds(precise_window_seconds);
+        zoom_processor.set_aux_harmonics_enabled(true);
+        
+        // Pull latest DSP snapshot (GUI thread)
+        {
+            tuner::dsp::DspSnapshot snap;
+            if (zoom_processor.try_get_snapshot(snap)) {
+                current_spectrum = snap.magnitudes;
+                peak_frequency = snap.peak_hz;
+                peak_magnitude = snap.peak_magnitude;
+                frames_processed++;
+                // Publish live values and feed NotesState like before
+                notes_state.set_live_measurements(snap.f0_hz, snap.f2_hz, snap.snr0, snap.snr2);
+                if (snap.f0_hz > 0.0f && snap.f2_hz > 0.0f && snap.snr0 > 0.5f && snap.snr2 > 0.5f) {
+                    gui::NotesStateReading r{};
+                    r.f0_hz = snap.f0_hz; r.f2_hz = snap.f2_hz; r.f3_hz = snap.f3_hz; r.f4_hz = snap.f4_hz; r.f5_hz = snap.f5_hz; r.f6_hz = snap.f6_hz;
+                    r.mag0 = snap.mag0; r.mag2 = snap.mag2; r.mag3 = snap.mag3; r.mag4 = snap.mag4; r.mag5 = snap.mag5; r.mag6 = snap.mag6;
+                    r.snr0 = snap.snr0; r.snr2 = snap.snr2; r.snr3 = snap.snr3; r.snr4 = snap.snr4; r.snr5 = snap.snr5; r.snr6 = snap.snr6;
+                    notes_state.ingest_measurement(r);
+                }
+                // Update waterfall according to speed control
+                if (++waterfall_counter >= std::max(1, waterfall_stride)) {
+                    waterfall_counter = 0;
+                    waterfall_view.update(current_spectrum);
+                }
+            }
+        }
 
         // Main menu bar
         if (ImGui::BeginMainMenuBar()) {
@@ -552,6 +408,9 @@ private:
                 if (ImGui::MenuItem("Microphone Setup...")) {
                     show_mic_setup = true;
                 }
+                if (ImGui::MenuItem("Audio Controls")) {
+                    show_audio_controls = true;
+                }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Analysis")) {
@@ -578,6 +437,8 @@ private:
                 if (load_session_settings(path.c_str(), ss)) {
                     current_session = ss;
                     settings.last_session_path = path;
+                    // Sync notes state to the loaded session once
+                    notes_state.update_from_session(current_session);
                     current_page = AppPage::Main;
                 }
             };
@@ -586,6 +447,8 @@ private:
                 if (load_session_settings(path.c_str(), ss)) {
                     current_session = ss;
                     settings.last_session_path = path;
+                    // Sync notes state to the loaded session once
+                    notes_state.update_from_session(current_session);
                     current_page = AppPage::Main;
                 }
             };
@@ -622,8 +485,7 @@ private:
                 current_page = AppPage::Main;
             };
             gui::render_new_session_setup(current_session, scb);
-            // Keep center frequency in sync with notes state computation
-            notes_state.update_from_session(current_session);
+            // Show current center without overwriting user selections live
             center_frequency = notes_state.center_frequency_hz();
             return;
         }
@@ -642,6 +504,29 @@ private:
                             ImGui::EndMenu();
                         }
                         ImGui::EndMenuBar();
+                    }
+                    // Partial selection row (H1..H8)
+                    {
+                        int sel_k = notes_state.preferred_partial_k();
+                        ImGui::TextUnformatted("Partial:");
+                        ImGui::SameLine();
+                        for (int k = 1; k <= 8; ++k) {
+                            bool active = (k == sel_k);
+                            if (active) {
+                                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(60, 140, 90, 220));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 170, 110, 230));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(80, 190, 130, 255));
+                            }
+                            char lbl[8]; snprintf(lbl, sizeof(lbl), "H%d", k);
+                            if (ImGui::SmallButton(lbl)) {
+                                notes_state.set_preferred_partial_k(k);
+                                notes_state.update_from_session(current_session);
+                            }
+                            if (active) ImGui::PopStyleColor(3);
+                            ImGui::SameLine();
+                        }
+                        ImGui::NewLine();
+                        ImGui::Text("Centering at %s (H%d)", "selected note", notes_state.preferred_partial_k());
                     }
                     if (!current_spectrum.empty()) {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -835,54 +720,34 @@ private:
             }
             // Icon Browser window (optional)
             if (show_icon_browser) {
-                ImGui::Begin("Icon Browser", &show_icon_browser);
-                ImGui::TextUnformatted("Click a glyph to copy its codepoint (U+XXXX) to the clipboard.");
-                ImGui::Separator();
-                ImGuiIO& io = ImGui::GetIO();
-                ImFont* icon_font = nullptr;
-                if (!io.Fonts->Fonts.empty()) icon_font = io.Fonts->Fonts.back();
-                if (icon_font) {
-                    int items_in_row = 10;
-                    int col = 0;
-                    for (int cp = 0xE000; cp <= 0xF8FF; ++cp) {
-                        // Encode codepoint to UTF-8 (PUA range uses 3-byte UTF-8)
-                        char utf8[5] = {};
-                        ImWchar w = (ImWchar)cp;
-                        if (w < 0x80) { utf8[0] = (char)w; utf8[1] = 0; }
-                        else if (w < 0x800) { utf8[0] = (char)(0xC0 | (w >> 6)); utf8[1] = (char)(0x80 | (w & 0x3F)); utf8[2] = 0; }
-                        else if (w < 0x10000) { utf8[0] = (char)(0xE0 | (w >> 12)); utf8[1] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[2] = (char)(0x80 | (w & 0x3F)); utf8[3] = 0; }
-                        else { utf8[0] = (char)(0xF0 | (w >> 18)); utf8[1] = (char)(0x80 | ((w >> 12) & 0x3F)); utf8[2] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[3] = (char)(0x80 | (w & 0x3F)); utf8[4] = 0; }
-                        ImGui::PushFont(icon_font);
-                        bool clicked = ImGui::Button(utf8, ImVec2(28, 28));
-                        ImGui::PopFont();
-                        ImGui::SameLine();
-                        ImGui::Text("U+%04X", cp);
-                        if (clicked) {
-                            char buf[16];
-                            snprintf(buf, sizeof(buf), "U+%04X", cp);
-                            ImGui::SetClipboardText(buf);
-                        }
-                        if (++col >= items_in_row) { col = 0; ImGui::NewLine(); }
-                    }
-                } else {
-                    ImGui::TextUnformatted("No icon font loaded.");
-                }
-                ImGui::End();
+                gui::render_icon_browser_window(show_icon_browser);
             }
             // Mic Setup modal window
             if (show_mic_setup) {
-                std::string dev = audio_input->get_config().device_name;
+                std::string dev = audio_engine->get_config().device_name;
                 bool open = true;
                 if (gui::render_mic_setup_window(dev, open)) {
                     // Restart audio with selected device
-                    audio_input->stop();
-                    AudioConfig cfg = audio_input->get_config();
-                    cfg.device_name = dev;
-                    audio_input = createAudioInput(cfg);
-                    audio_input->set_process_callback([this](const float* input, int num_samples){ this->process_audio(input, num_samples); });
-                    audio_input->start();
+                    audio_engine->change_device(dev);
                 }
                 if (!open) show_mic_setup = false;
+            }
+
+            // Audio Controls window
+            if (show_audio_controls) {
+                if (ImGui::Begin("Audio Controls", &show_audio_controls)) {
+                    auto ls = audio_engine ? audio_engine->get_latency_stats() : IAudioInput::LatencyStats{};
+                    ImGui::Text("Device: %s", audio_engine ? audio_engine->get_config().device_name.c_str() : "<none>");
+                    ImGui::Text("Sample rate: %u", audio_engine ? audio_engine->get_config().sample_rate : 0);
+                    ImGui::Text("Latency: min %.2fms max %.2fms avg %.2fms xruns %d", ls.min_ms, ls.max_ms, ls.avg_ms, ls.xruns);
+                    bool running = audio_engine && audio_engine->is_running();
+                    if (running) {
+                        if (ImGui::Button("Stop")) audio_engine->stop();
+                    } else {
+                        if (ImGui::Button("Start")) audio_engine->start();
+                    }
+                }
+                ImGui::End();
             }
 
             // Command palette
@@ -956,7 +821,8 @@ private:
                                      spectrum_view,
                                      &waterfall_view,
                                      waterfall_stride,
-                                     &concentric_view);
+                                     &concentric_view,
+                                     &notes_state);
             } else {
                 // When notes controller is visible in kiosk mode, use it for center frequency
                 if (show_notes_controller) {
@@ -980,6 +846,29 @@ private:
                     const float height = m_av.y;
                     waterfall_view.draw(draw_list, canvas_pos, width, height, spectrum_view);
                 } else if (!current_spectrum.empty()) {
+                    // Partial selection row (H1..H8)
+                    {
+                        int sel_k = notes_state.preferred_partial_k();
+                        ImGui::TextUnformatted("Partial:");
+                        ImGui::SameLine();
+                        for (int k = 1; k <= 8; ++k) {
+                            bool active = (k == sel_k);
+                            if (active) {
+                                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(60, 140, 90, 220));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 170, 110, 230));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(80, 190, 130, 255));
+                            }
+                            char lbl[8]; snprintf(lbl, sizeof(lbl), "H%d", k);
+                            if (ImGui::SmallButton(lbl)) {
+                                notes_state.set_preferred_partial_k(k);
+                                notes_state.update_from_session(current_session);
+                            }
+                            if (active) ImGui::PopStyleColor(3);
+                            ImGui::SameLine();
+                        }
+                        ImGui::NewLine();
+                        ImGui::Text("Centering at %s (H%d)", "selected note", notes_state.preferred_partial_k());
+                    }
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
                     ImVec2 m_av = ImGui::GetContentRegionAvail();
@@ -1027,7 +916,7 @@ private:
             ImGui::Columns(4, nullptr, false);
             // Left status cell: brief audio diagnostics
             {
-                auto ls = audio_input ? audio_input->get_latency_stats() : IAudioInput::LatencyStats{};
+                auto ls = audio_engine ? audio_engine->get_latency_stats() : IAudioInput::LatencyStats{};
                 ImGui::Text("Audio: %d fr | RMS %.3f | xruns %d", (int)last_callback_frames.load(), last_rms, ls.xruns);
             }
             ImGui::NextColumn();
@@ -1042,39 +931,7 @@ private:
         
         // Optional: Icon Browser window
         if (show_icon_browser) {
-            ImGui::Begin("Icon Browser", &show_icon_browser);
-            ImGui::TextUnformatted("Click a glyph to copy its codepoint (U+XXXX) to the clipboard.");
-            ImGui::Separator();
-            ImGuiIO& io = ImGui::GetIO();
-            ImFont* icon_font = nullptr;
-            if (!io.Fonts->Fonts.empty()) icon_font = io.Fonts->Fonts.back();
-            if (icon_font) {
-                int items_in_row = 10;
-                int col = 0;
-                for (int cp = 0xE000; cp <= 0xF8FF; ++cp) {
-                    // Encode codepoint to UTF-8 (PUA range uses 3-byte UTF-8)
-                    char utf8[5] = {};
-                    ImWchar w = (ImWchar)cp;
-                    if (w < 0x80) { utf8[0] = (char)w; utf8[1] = 0; }
-                    else if (w < 0x800) { utf8[0] = (char)(0xC0 | (w >> 6)); utf8[1] = (char)(0x80 | (w & 0x3F)); utf8[2] = 0; }
-                    else if (w < 0x10000) { utf8[0] = (char)(0xE0 | (w >> 12)); utf8[1] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[2] = (char)(0x80 | (w & 0x3F)); utf8[3] = 0; }
-                    else { utf8[0] = (char)(0xF0 | (w >> 18)); utf8[1] = (char)(0x80 | ((w >> 12) & 0x3F)); utf8[2] = (char)(0x80 | ((w >> 6) & 0x3F)); utf8[3] = (char)(0x80 | (w & 0x3F)); utf8[4] = 0; }
-                    ImGui::PushFont(icon_font);
-                    bool clicked = ImGui::Button(utf8, ImVec2(28, 28));
-                    ImGui::PopFont();
-                    ImGui::SameLine();
-                    ImGui::Text("U+%04X", cp);
-                    if (clicked) {
-                        char buf[16];
-                        snprintf(buf, sizeof(buf), "U+%04X", cp);
-                        ImGui::SetClipboardText(buf);
-                    }
-                    if (++col >= items_in_row) { col = 0; ImGui::NewLine(); }
-                }
-            } else {
-                ImGui::TextUnformatted("No icon font loaded.");
-            }
-            ImGui::End();
+            gui::render_icon_browser_window(show_icon_browser);
         }
         
         ImGui::End();
