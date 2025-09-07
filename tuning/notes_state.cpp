@@ -156,6 +156,7 @@ void NotesState::ingest_measurement(const NotesStateReading& r) {
         // No candidate this frame resets streak but keeps last lock
         bconv_ok_count_ = 0;
     }
+
 }
 
 float NotesState::magnitude_weighted_average_b() const {
